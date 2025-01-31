@@ -6,6 +6,7 @@
   <name>CapCredentialsTest</name>
   <version>1.0</version>
   <build>
+    <directory>${project.basedir}/target</directory>
     <plugins>
       <plugin>
         <artifactId>maven-compiler-plugin</artifactId>
