@@ -65,6 +65,7 @@
     </dependencies>
 
     <build>
+        <directory>${project.basedir}/target</directory>
         <plugins>
             <!-- Compiler Plugin -->
             <plugin>
