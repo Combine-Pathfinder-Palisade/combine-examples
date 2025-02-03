@@ -16,6 +16,7 @@ public final class CapCredentialsProvider implements AwsCredentialsProvider {
   protected final String role;
   protected final String password;
   protected final String filePath;
+  protected final String targetUrl;
 
   private Date refreshed = null;
 
@@ -31,8 +32,6 @@ public final class CapCredentialsProvider implements AwsCredentialsProvider {
   }
 
     public AwsCredentials resolveCredentials() {
-      //Debug:
-      System.out.println("DEBUG: resolveCredentials() called.");
       if (refreshed == null || new Date().getTime() - refreshed.getTime() > 1000*60*45) { // Building in a 15 minute buffer.
         try {
           refresh();
@@ -58,7 +57,11 @@ public final class CapCredentialsProvider implements AwsCredentialsProvider {
         throw new IllegalArgumentException("ERROR: Unknown role format. Expected suffix '-C2S' or '-SC2S'. Role provided: " + role);
     }
 
+    String credentialsString = helper.get(requestUrl);
+  
+    System.out.println("----------------------");
     System.out.println(credentialsString);
+    System.out.println("----------------------");
 
     JsonObject credentialsJson = JsonParser.parseString(credentialsString).getAsJsonObject();
 

@@ -13,6 +13,9 @@ public class CombineTutorialDriver {
     String mission = argMap.getOrDefault("mission", "CCustomer");
     String role = argMap.getOrDefault("role", "WLDEVELOPER-C2S");
 
+    // Use provided target_url if specified, otherwise determine it from role
+    String targetUrl = argMap.getOrDefault("target_url", determineTargetUrl(role));
+
     // Required arguments
     if (!argMap.containsKey("password") || !argMap.containsKey("keystorePath")) {
       printUsage();
@@ -28,12 +31,23 @@ public class CombineTutorialDriver {
     System.out.println("  Agency:       " + agency);
     System.out.println("  Mission:      " + mission);
     System.out.println("  Role:         " + role);
+    System.out.println("  Target URL:   " + targetUrl);
     System.out.println("  KeystorePath: " + keystorePath);
     System.out.println("----------------------");
 
     // Initialize credentials provider
-    CapCredentialsProvider provider = new CapCredentialsProvider(agency, mission, role, password, keystorePath);
+    CapCredentialsProvider provider = new CapCredentialsProvider(agency, mission, role, password, keystorePath, targetUrl);
     provider.resolveCredentials();
+  }
+
+  private static String determineTargetUrl(String role) {
+    if (role.endsWith("-SC2S")) {
+      return "https://geoaxis.nga.smil.mil/cap/gxCAP/getTemporaryCredentials";
+    } else if (role.endsWith("-C2S")) {
+      return "https://cap.cia.ic.gov/api/v1/credentials";
+    } else {
+      throw new IllegalArgumentException("ERROR: Unknown role suffix for determining target URL.");
+    }
   }
 
   /**
