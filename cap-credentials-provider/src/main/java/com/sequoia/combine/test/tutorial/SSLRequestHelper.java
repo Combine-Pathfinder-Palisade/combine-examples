@@ -16,6 +16,7 @@ public final class SSLRequestHelper {
   private final HttpClient client;
 
   public SSLRequestHelper(String password, String filePath) {
+    
     try {
       SSLContext sslContext = SSLContextBuilder.create().loadKeyMaterial(
           new File(filePath), // TODO: Enter your file name

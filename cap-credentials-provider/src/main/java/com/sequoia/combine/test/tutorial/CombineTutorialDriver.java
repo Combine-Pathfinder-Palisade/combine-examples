@@ -23,11 +23,13 @@ public class CombineTutorialDriver {
     String keystorePath = argMap.get("keystorePath");
 
     // Display chosen values
+    System.out.println("----------------------");
     System.out.println("Using settings:");
     System.out.println("  Agency:       " + agency);
     System.out.println("  Mission:      " + mission);
     System.out.println("  Role:         " + role);
     System.out.println("  KeystorePath: " + keystorePath);
+    System.out.println("----------------------");
 
     // Initialize credentials provider
     CapCredentialsProvider provider = new CapCredentialsProvider(agency, mission, role, password, keystorePath);
@@ -56,6 +58,7 @@ public class CombineTutorialDriver {
    */
   private static void printUsage() {
     System.out.println("Usage: java -jar cap-credentials-test-1.0.jar --password=<password> --keystorePath=<path> [OPTIONS]");
+    
     System.out.println("\nRequired Arguments:");
     System.out.println("  --password=<password>        (No default, must be provided)");
     System.out.println("  --keystorePath=<path>        (No default, must be provided)");
@@ -65,8 +68,20 @@ public class CombineTutorialDriver {
     System.out.println("  --mission=<mission>          (Default: CCustomer)");
     System.out.println("  --role=<role>                (Default: WLDEVELOPER-C2S)");
 
-    System.out.println("\nExample:");
+    System.out.println("\nRole Formatting:");
+    System.out.println("  - If the role ends with '-C2S', the request will use:");
+    System.out.println("    ?agency=<agency>&mission=<mission>&role=<role>");
+    System.out.println("  - If the role ends with '-SC2S', the request will use:");
+    System.out.println("    ?agency=<agency>&accountName=<mission>&roleName=<role>");
+
+    System.out.println("\nExamples:");
     System.out.println("  java -jar cap-credentials-test-1.0.jar --password=mySecret --keystorePath=/path/to/keystore");
     System.out.println("  java -jar cap-credentials-test-1.0.jar --password=mySecret --keystorePath=/path/to/keystore --agency=NewAgency --mission=NewMission --role=NewRole");
+
+    System.out.println("\nSC2S Role Example:");
+    System.out.println("  java -jar cap-credentials-test-1.0.jar --password=mySecret --keystorePath=/path/to/keystore --agency=Combine --mission=CCustomer --role=WLDEVELOPER-SC2S");
+
+    System.out.println("\nC2S Role Example:");
+    System.out.println("  java -jar cap-credentials-test-1.0.jar --password=mySecret --keystorePath=/path/to/keystore --agency=Combine --mission=CCustomer --role=WLDEVELOPER-C2S");
   }
 }

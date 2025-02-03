@@ -21,15 +21,18 @@ public final class CapCredentialsProvider implements AwsCredentialsProvider {
 
   private AwsCredentials credentials = null;
 
-  public CapCredentialsProvider(String agency, String mission, String role, String password, String filePath) {
+  public CapCredentialsProvider(String agency, String mission, String role, String password, String filePath, String targetUrl) {
     this.agency = agency;
     this.mission = mission;
     this.role = role;
     this.password = password;
     this.filePath = filePath;
+    this.targetUrl = targetUrl;
   }
 
     public AwsCredentials resolveCredentials() {
+      //Debug:
+      System.out.println("DEBUG: resolveCredentials() called.");
       if (refreshed == null || new Date().getTime() - refreshed.getTime() > 1000*60*45) { // Building in a 15 minute buffer.
         try {
           refresh();
@@ -44,7 +47,16 @@ public final class CapCredentialsProvider implements AwsCredentialsProvider {
   private void refresh() {
     SSLRequestHelper helper = new SSLRequestHelper(password, filePath); // TODO: Truststore/Keystore password!
 
-    String credentialsString = helper.get("https://cap.cia.ic.gov/api/v1/credentials?agency=" + agency + "&mission=" + mission + "&role=" + role);
+    String requestUrl;
+    
+    // Dynamically modify the query parameters based on the role suffix
+    if (role.endsWith("-SC2S")) {
+        requestUrl = targetUrl + "?agency=" + agency + "&accountName=" + mission + "&roleName=" + role;
+    } else if (role.endsWith("-C2S")) {
+        requestUrl = targetUrl + "?agency=" + agency + "&mission=" + mission + "&role=" + role;
+    } else {
+        throw new IllegalArgumentException("ERROR: Unknown role format. Expected suffix '-C2S' or '-SC2S'. Role provided: " + role);
+    }
 
     System.out.println(credentialsString);
 
@@ -58,6 +70,7 @@ public final class CapCredentialsProvider implements AwsCredentialsProvider {
         credentialsJson.get("SessionToken").getAsString()
     );
 
+     
     refreshed = new Date();
   }
 }
