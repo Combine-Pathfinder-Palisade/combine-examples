@@ -11,8 +11,8 @@ public class CombineTutorialDriver {
     // Default values for optional arguments
     String agency = argMap.getOrDefault("agency", "Combine");
     String mission = argMap.getOrDefault("mission", "CCustomer");
-    String role = argMap.getOrDefault("role", "WLDEVELOPER-" + endpoint);
     String endpoint = argMap.get("endpoint");
+    String role = argMap.getOrDefault("role", "WLDEVELOPER-" + endpoint);
 
     // Required arguments
     if (!argMap.containsKey("password") || !argMap.containsKey("keystorePath") || endpoint == null) {
