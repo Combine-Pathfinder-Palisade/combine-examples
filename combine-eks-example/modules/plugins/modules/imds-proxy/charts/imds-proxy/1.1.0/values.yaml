@@ -1,0 +1,20 @@
+# Default values for combine-imds-proxy.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+image:
+  repository: public.ecr.aws/g5v8m7e3/combine/imds-proxy
+  pullPolicy: Always
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: "v1.1.0"
+
+proxy:
+  verbose: "false"
+  targetRegion: "us-test-region"
+  containerHttpPort: "8080"
+  hostHttpPort: "18080"
+  # Time between allowed IPs log messages in minutes.
+  allowedIPsLogDelay: "1"
+  refreshIPsDelay: "1"

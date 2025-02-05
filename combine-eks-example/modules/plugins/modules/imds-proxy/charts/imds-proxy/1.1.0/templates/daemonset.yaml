@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "combine-imds-proxy.name" . }}
+spec:
+  selector:
+    matchLabels:
+      name: {{ include "combine-imds-proxy.name" . }}
+  template:
+    metadata:
+      labels:
+        name: {{ include "combine-imds-proxy.name" . }}
+    spec:
+      tolerations:
+        - operator: Exists
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: {{ include "combine-imds-proxy.fullname" . }}
+      containers:
+        - name: {{ include "combine-imds-proxy.name" . }}
+          image: {{ printf "%s:%s" .Values.image.repository (default (printf "v%s" .Chart.AppVersion) (.Values.image.tag | toString)) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: PROXY_TARGET_REGION
+              value: {{ .Values.proxy.targetRegion }}
+            - name: PROXY_HTTP_PORT
+              value: {{ .Values.proxy.containerHttpPort | quote }}
+            - name: PROXY_ALLOWED_IPS_LOG_DELAY
+              value: {{ .Values.proxy.allowedIPsLogDelay | quote }}
+            - name: PROXY_REFRESH_IPS_LOG_DELAY
+              value: {{ .Values.proxy.refreshIPsDelay | quote }}
+            - name: PROXY_VERBOSE
+              value: {{ .Values.proxy.verbose | quote }}
+            - name: PROXY_HOST_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - containerPort: {{ .Values.proxy.containerHttpPort }}
+              hostPort: {{ .Values.proxy.hostHttpPort }}
