@@ -55,7 +55,8 @@ public class CombineTutorialDriver {
       case "SC2S":
         return "https://geoaxis.nga.smil.mil/cap/gxCAP/getTemporaryCredentials";
       case "C2S":
-        return "https://cap.cia.ic.gov/api/v1/credentials";
+        // Retrieve the following URL from a combine team member.
+        return "https://www.google.com";
       default:
         throw new IllegalArgumentException("ERROR: Unknown endpoint.");
     }
