@@ -1,4 +1,5 @@
-# SAML POC
+# KeyCloak SAML POC
+
 This project uses a dockerized Keycloak connected to a MySQL database in RDS to authenticate users in a dummy NodeJS app. 
 
 *The architecture needs to be re-structured, but as of now we run Keycloak/docker on one EC2 and the node app on another. Keep this in mind as the documentation discusses installing things, copying files, and running things. Some is done on the Keycloak machine and some on the node machine.*

@@ -1,3 +1,5 @@
+# Simple Combine Terraform Example
+
 This is a simple terraform configuration that details how to interact with Combine's implementation of the CAP API and endpoint emulation, and provisions a simple SQS stack in the account.
 
 The 'meat' of the configuration is in the provider block. Note that:
