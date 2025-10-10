@@ -197,55 +197,29 @@ validate_rewrite_smart() {
   fi
 }
 
-#validate_rewrite_smart() {
-#  local label="$1"
-#  local cmd="$2"
-#  local region="$3"
-#  local pattern="arn:aws-iso(-b)?:|us-iso(-b)?|usie\\d?|usiw\\d?|usib\\d?|c2s.ic.gov|sc2s.sgov.gov"
-#
-#  printf "🔍 %s%s: " "$label" "${region:+ ($region)}"
-#
-#  local full_cmd="$cmd"
-#  [[ -n "$region" ]] && full_cmd="$cmd --region $region"
-#
-#  local output
-#  output=$(eval "$full_cmd" 2>/dev/null)
-#
-#  # Exit early if output is empty or invalid
-#  if [[ -z "$output" || "$output" == "null" ]]; then
-#    echo "❌ Failed (empty or invalid response)"
-#    return
-#  fi
-#
-#  # Extract all string values from the JSON
-#  local matches
-#  matches=$(echo "$output" | jq -r '.. | scalars | select(type == "string")' | grep -E "$pattern" 2>/dev/null || true)
-#
-#  if [[ -n "$matches" ]]; then
-#    echo "✅ Passed"
-#  else
-#    echo "❌ Failed (no rewritten strings found)"
-#    echo "$output" | jq . | head -n 20
-#  fi
-#}
-
 ###########################################
 ## Validate if the result is blocked     ##
 ###########################################
 
-validate_expect_combine_rejection() {
+validate_expected_error_match() {
   local label="$1"
   local command="$2"
+  local expected_message="$3"
+  local fallback_message="${4:-}"  
 
   printf "🚫 %s: " "$label"
 
   local output
   output=$(eval "$command" 2>&1)
 
-  if echo "$output" | grep -q "Combine rejected this AWS API"; then
-    echo "✅ Passed (Combine rejection)"
+  if echo "$output" | grep -q "$expected_message"; then
+    echo "✅ Passed ($expected_message)"
   else
-    echo "❌ Failed (did not receive Combine rejection)"
+    if echo "$output" | grep -q "403"; then
+      echo "❌ Failed (403 - possible encoding bug)"
+    else
+      echo "❌ Failed${fallback_message:+ ($fallback_message)}"
+    fi
     echo "$output" | head -n 10
   fi
 }
@@ -274,21 +248,23 @@ validate_instance_type_absent_grep() {
 ## Validate unsupported operation        ##
 ###########################################
 
-validate_unsupported_operation() {
-  local label="$1"
-  local command="$2"
+#validate_unsupported_operation() {
+#  local label="$1"
+#  local command="$2"
+#
+#  printf "🔍 %s: " "$label"
+#
+#  output=$(eval "$command" 2>&1 || true)
+#
+#  if echo "$output" | grep -q "An error occurred (UnsupportedOperation)"; then
+#    echo "✅ Passed (UnsupportedOperation as expected)"
+#  else
+#    echo "❌ Failed (Did not return UnsupportedOperation)"
+#    echo "$output" | head -n 2
+#  fi
+#}
 
-  printf "🔍 %s: " "$label"
 
-  output=$(eval "$command" 2>&1 || true)
-
-  if echo "$output" | grep -q "An error occurred (UnsupportedOperation)"; then
-    echo "✅ Passed (UnsupportedOperation as expected)"
-  else
-    echo "❌ Failed (Did not return UnsupportedOperation)"
-    echo "$output" | head -n 2
-  fi
-}
 ## this function is used when we need to check if the call passed and it returns a result that doesnt need to be rewritten 
 ###########################################
 ## Validate if no error                  ##
@@ -345,26 +321,26 @@ validate_success() {
 ## Validate expected errors              ##
 ###########################################
 
-validate_expected_error() {
-  local label="$1"
-  local cmd="$2"
-  local expected_code="$3"
-
-  echo -n "🔍 $label: "
-
-  local output
-  output=$(eval "$cmd" 2>&1)
-
-  if echo "$output" | grep -q "$expected_code"; then
-    echo "✅ Passed"
-  elif echo "$output" | grep -q "403"; then
-    echo "❌ Failed (returned 403, possible URI encoding bug)"
-    echo "$output"
-  else
-    echo "❌ Failed (unexpected error)"
-    echo "$output"
-  fi
-}
+#validate_expected_error_match() {
+#  local label="$1"
+#  local cmd="$2"
+#  local expected_code="$3"
+#
+#  echo -n "🔍 $label: "
+#
+#  local output
+#  output=$(eval "$cmd" 2>&1)
+#
+#  if echo "$output" | grep -q "$expected_code"; then
+#    echo "✅ Passed"
+#  elif echo "$output" | grep -q "403"; then
+#    echo "❌ Failed (returned 403, possible URI encoding bug)"
+#    echo "$output"
+#  else
+#    echo "❌ Failed (unexpected error)"
+#    echo "$output"
+#  fi
+#}
 
 ###########################################
 ## Validate S3 still works               ##
@@ -441,73 +417,6 @@ validate_s3() {
   fi
 }
 
-#validate_s3() {
-#  local label="$1"
-#  local source="$2"
-#  local s3_key="$3"
-#  local mode="$4"
-#  local bucket="combine-endpoint-test"
-#  local s3_uri="s3://$bucket/$s3_key"
-#  local back_file="${source}_back"
-#
-#  printf "🔍 %s: " "$label"
-#
-#  if [[ "$mode" == "basic" ]]; then
-#    if output=$(eval "$source" 2>/dev/null) && [[ "$output" != "null" && -n "$output" ]]; then
-#      echo "✅ Passed"
-#    else
-#      echo "❌ Failed (null or error)"
-#    fi
-#
-#  elif [[ "$mode" == "checksum" ]]; then
-#    # Auto-generate test file if it doesn't exist
-#    if [[ ! -f "$source" ]]; then
-#      case "$source" in
-#        smallfile.txt) head -c 500 < /dev/urandom | base64 > "$source" ;;
-#        file.txt) head -c 50000 < /dev/urandom | base64 > "$source" ;;
-#        bigfile.txt) head -c 5000000 < /dev/urandom | base64 > "$source" ;;
-#        megafile.txt) head -c 500000000 < /dev/urandom | base64 > "$source" ;;
-#        *) echo "❌ Unknown file: $source" && return ;;
-#      esac
-#    fi
-#
-#    # Upload to S3
-#    if ! aws s3 cp "$source" "$s3_uri" > /dev/null 2>&1; then
-#      echo "❌ Upload failed"
-#      return
-#    fi
-#
-#    # Download back from S3
-#    if ! aws s3 cp "$s3_uri" "$back_file" > /dev/null 2>&1; then
-#      echo "❌ Download failed"
-#      return
-#    fi
-#
-#    # Compare checksums
-#    local orig_sum back_sum
-#    orig_sum=$(md5sum "$source" | awk '{print $1}')
-#    back_sum=$(md5sum "$back_file" | awk '{print $1}')
-#
-#    if [[ "$orig_sum" == "$back_sum" ]]; then
-#      echo "✅ Passed"
-#    else
-#      echo "❌ Checksum mismatch"
-#      echo "   🔸 Original:   $orig_sum"
-#      echo "   🔸 Downloaded: $back_sum"
-#    fi
-#
-#    # Optional cleanup
-#    rm -f "$back_file"
-#    # Uncomment to delete from S3 too:
-#    # aws s3 rm "$s3_uri" > /dev/null 2>&1
-#
-#  else
-#    echo "❌ Unknown mode: $mode"
-#  fi
-#}
-
-detect_vpc_id
-
 log ""
 log "########################"
 log "# 1. Calls should pass, will check rewritten values"
@@ -533,50 +442,50 @@ log "########################"
 log "# 2. Expected 501 Failures"
 log "########################"
 
-validate_expect_combine_rejection "autoscaling describe-traffic-sources" "aws autoscaling describe-traffic-sources --auto-scaling-group-name foo"
-validate_expect_combine_rejection "cloudformation describe-stack-resource-drifts" "aws cloudformation describe-stack-resource-drifts --stack-name CombineTest"
-validate_expect_combine_rejection "cloudtrail get-insight-selectors" "aws cloudtrail get-insight-selectors --trail-name CombineTest"
-validate_expect_combine_rejection "cloudwatch describe-insight-rules" "aws cloudwatch describe-insight-rules"
-validate_expect_combine_rejection "events list-archives" "aws events list-archives"
-validate_expect_combine_rejection "deploy list-git-hub-account-token-names" "aws deploy list-git-hub-account-token-names"
-validate_expect_combine_rejection "comprehend contains-pii-entities" "aws comprehend contains-pii-entities --text foo --language-code foo"
-validate_expect_combine_rejection "configservice describe-conformance-packs" "aws configservice describe-conformance-packs"
-validate_expect_combine_rejection "ds add-region" "aws ds add-region --directory-id foo --region-name us-iso-west-1 --vpc-settings {}"
-validate_expect_combine_rejection "dynamodb describe-contributor-insights" "aws dynamodb describe-contributor-insights --table-name foo"
-validate_expect_combine_rejection "ec2 describe-traffic-mirror-filters" "aws ec2 describe-traffic-mirror-filters"
-validate_expect_combine_rejection "ec2 describe-spot-instance-requests" "aws ec2 describe-spot-instance-requests"
-validate_expect_combine_rejection "ecr describe-image-scan-findings" "aws ecr describe-image-scan-findings --repository-name foo --image-id imageDigest=foo,imageTag=foo"
-validate_expect_combine_rejection "ecs describe-capacity-providers" "aws ecs describe-capacity-providers"
-validate_expect_combine_rejection "elasticache describe-global-replication-groups" "aws elasticache describe-global-replication-groups"
-validate_expect_combine_rejection "elb create-app-cookie-stickiness-policy" "aws elb create-app-cookie-stickiness-policy --load-balancer-name foo --policy-name foo --cookie-name foo"
-validate_expect_combine_rejection "eks describe-insight" "aws eks describe-insight --cluster-name foo --id foo"
-validate_expect_combine_rejection "emr list-notebook-executions" "aws emr list-notebook-executions"
-validate_expect_combine_rejection "glue list-workflows" "aws glue list-workflows"
-validate_expect_combine_rejection "guardduty describe-malware-scans" "aws guardduty describe-malware-scans --detector-id foo"
-validate_expect_combine_rejection "imagebuilder list-workflows" "aws imagebuilder list-workflows"
-validate_expect_combine_rejection "kms create-custom-key-store" "aws kms create-custom-key-store --custom-key-store-name foo"
-validate_expect_combine_rejection "lambda get-function-url-config" "aws lambda get-function-url-config --function-name foo"
-validate_expect_combine_rejection "license-manager get-grant" "aws license-manager get-grant --grant-arn foo --region us-isob-east-1"
-validate_expect_combine_rejection "medialive list-multiplexes" "aws medialive list-multiplexes"
-validate_expect_combine_rejection "rds describe-blue-green-deployments" "aws rds describe-blue-green-deployments"
-validate_expect_combine_rejection "redshift copy-cluster-snapshot" "aws redshift copy-cluster-snapshot --source-snapshot-identifier foo --target-snapshot-identifier foo"
-validate_expect_combine_rejection "route53 list-traffic-policies" "aws route53 list-traffic-policies"
-validate_expect_combine_rejection "route53resolver list-resolver-query-log-configs" "aws route53resolver list-resolver-query-log-configs"
-validate_expect_combine_rejection "sagemaker list-code-repositories" "aws sagemaker list-code-repositories"
-validate_expect_combine_rejection "secretsmanager stop-replication-to-replica" "aws secretsmanager stop-replication-to-replica --secret-id foo"
-validate_expect_combine_rejection "sns get-data-protection-policy" "aws sns get-data-protection-policy --resource-arn foo"
-validate_expect_combine_rejection "stepfunctions test-state" "aws stepfunctions test-state --definition {} --role-arn foo"
-validate_expect_combine_rejection "transcribe list-medical-vocabularies" "aws transcribe list-medical-vocabularies"
-validate_expect_combine_rejection "workspaces create-updated-workspace-image" "aws workspaces create-updated-workspace-image --name foo --description foo --source-image-id foo --region us-isob-east-1"
-  
+validate_expected_error_match "autoscaling describe-traffic-sources" "aws autoscaling describe-traffic-sources --auto-scaling-group-name foo" "Combine rejected this AWS API"
+validate_expected_error_match "cloudformation describe-stack-resource-drifts" "aws cloudformation describe-stack-resource-drifts --stack-name CombineTest" "Combine rejected this AWS API"
+validate_expected_error_match "cloudtrail get-insight-selectors" "aws cloudtrail get-insight-selectors --trail-name CombineTest" "Combine rejected this AWS API"
+validate_expected_error_match "cloudwatch describe-insight-rules" "aws cloudwatch describe-insight-rules" "Combine rejected this AWS API"
+validate_expected_error_match "events list-archives" "aws events list-archives" "Combine rejected this AWS API"
+validate_expected_error_match "deploy list-git-hub-account-token-names" "aws deploy list-git-hub-account-token-names" "Combine rejected this AWS API"
+validate_expected_error_match "comprehend contains-pii-entities" "aws comprehend contains-pii-entities --text foo --language-code foo" "Combine rejected this AWS API"
+validate_expected_error_match "configservice describe-conformance-packs" "aws configservice describe-conformance-packs" "Combine rejected this AWS API"
+validate_expected_error_match "ds add-region" "aws ds add-region --directory-id foo --region-name us-iso-west-1 --vpc-settings {}" "Combine rejected this AWS API"
+validate_expected_error_match "dynamodb describe-contributor-insights" "aws dynamodb describe-contributor-insights --table-name foo" "Combine rejected this AWS API"
+validate_expected_error_match "ec2 describe-traffic-mirror-filters" "aws ec2 describe-traffic-mirror-filters" "Combine rejected this AWS API"
+validate_expected_error_match "ec2 describe-spot-instance-requests" "aws ec2 describe-spot-instance-requests" "Combine rejected this AWS API"
+validate_expected_error_match "ecr describe-image-scan-findings" "aws ecr describe-image-scan-findings --repository-name foo --image-id imageDigest=foo,imageTag=foo" "Combine rejected this AWS API"
+validate_expected_error_match "ecs describe-capacity-providers" "aws ecs describe-capacity-providers" "Combine rejected this AWS API"
+validate_expected_error_match "elasticache describe-global-replication-groups" "aws elasticache describe-global-replication-groups" "Combine rejected this AWS API"
+validate_expected_error_match "elb create-app-cookie-stickiness-policy" "aws elb create-app-cookie-stickiness-policy --load-balancer-name foo --policy-name foo --cookie-name foo" "Combine rejected this AWS API"
+validate_expected_error_match "eks describe-insight" "aws eks describe-insight --cluster-name foo --id foo" "Combine rejected this AWS API"
+validate_expected_error_match "emr list-notebook-executions" "aws emr list-notebook-executions" "Combine rejected this AWS API"
+validate_expected_error_match "glue list-workflows" "aws glue list-workflows" "Combine rejected this AWS API"
+validate_expected_error_match "guardduty describe-malware-scans" "aws guardduty describe-malware-scans --detector-id foo" "Combine rejected this AWS API"
+validate_expected_error_match "imagebuilder list-workflows" "aws imagebuilder list-workflows" "Combine rejected this AWS API"
+validate_expected_error_match "kms create-custom-key-store" "aws kms create-custom-key-store --custom-key-store-name foo" "Combine rejected this AWS API"
+validate_expected_error_match "lambda get-function-url-config" "aws lambda get-function-url-config --function-name foo" "Combine rejected this AWS API"
+validate_expected_error_match "license-manager get-grant" "aws license-manager get-grant --grant-arn foo --region us-isob-east-1" "Combine rejected this AWS API"
+validate_expected_error_match "medialive list-multiplexes" "aws medialive list-multiplexes" "Combine rejected this AWS API"
+validate_expected_error_match "rds describe-blue-green-deployments" "aws rds describe-blue-green-deployments" "Combine rejected this AWS API"
+validate_expected_error_match "redshift copy-cluster-snapshot" "aws redshift copy-cluster-snapshot --source-snapshot-identifier foo --target-snapshot-identifier foo" "Combine rejected this AWS API"
+validate_expected_error_match "route53 list-traffic-policies" "aws route53 list-traffic-policies" "Combine rejected this AWS API"
+validate_expected_error_match "route53resolver list-resolver-query-log-configs" "aws route53resolver list-resolver-query-log-configs" "Combine rejected this AWS API"
+validate_expected_error_match "sagemaker list-code-repositories" "aws sagemaker list-code-repositories" "Combine rejected this AWS API"
+validate_expected_error_match "secretsmanager stop-replication-to-replica" "aws secretsmanager stop-replication-to-replica --secret-id foo" "Combine rejected this AWS API"
+validate_expected_error_match "sns get-data-protection-policy" "aws sns get-data-protection-policy --resource-arn foo" "Combine rejected this AWS API"
+validate_expected_error_match "stepfunctions test-state" "aws stepfunctions test-state --definition {} --role-arn foo" "Combine rejected this AWS API"
+validate_expected_error_match "transcribe list-medical-vocabularies" "aws transcribe list-medical-vocabularies" "Combine rejected this AWS API"
+validate_expected_error_match "workspaces create-updated-workspace-image" "aws workspaces create-updated-workspace-image --name foo --description foo --source-image-id foo --region us-isob-east-1" "Combine rejected this AWS API"
+ 
 log ""
 log "########################"
 log "# 4. Should return 501 Not Implemented (Unsupported services - implicitly denied)"
 log "# These services are unsupported and should trigger Combine-style rejection"
 log "########################"
 
-validate_expect_combine_rejection "polly list-lexicons" "aws polly list-lexicons"
-validate_expect_combine_rejection "macie2 list-members" "aws macie2 list-members"
+validate_expected_error_match "polly list-lexicons" "aws polly list-lexicons" "Combine rejected this AWS API"
+validate_expected_error_match "macie2 list-members" "aws macie2 list-members" "Combine rejected this AWS API"
 
 log ""
 log "########################"
@@ -595,10 +504,10 @@ log "# 6. ClassicLink Unsupported Operations"
 log "# These should fail with UnsupportedOperation (400)"
 log "########################"
 
-validate_unsupported_operation "describe-vpc-classic-link" "aws ec2 describe-vpc-classic-link"
-validate_unsupported_operation "describe-vpc-classic-link (ISOB)" "aws ec2 describe-vpc-classic-link --region us-isob-east-1"
-validate_unsupported_operation "describe-vpc-classic-link-dns-support" "aws ec2 describe-vpc-classic-link-dns-support"
-validate_unsupported_operation "describe-vpc-classic-link-dns-support (ISOB)" "aws ec2 describe-vpc-classic-link-dns-support --region us-isob-east-1"
+validate_expected_error_match "describe-vpc-classic-link" "aws ec2 describe-vpc-classic-link" "UnsupportedOperation"
+validate_expected_error_match "describe-vpc-classic-link (ISOB)" "aws ec2 describe-vpc-classic-link --region us-isob-east-1" "UnsupportedOperation"
+validate_expected_error_match "describe-vpc-classic-link-dns-support" "aws ec2 describe-vpc-classic-link-dns-support" "UnsupportedOperation"
+validate_expected_error_match "describe-vpc-classic-link-dns-support (ISOB)" "aws ec2 describe-vpc-classic-link-dns-support --region us-isob-east-1" "UnsupportedOperation"
 
 log ""
 log "########################"
@@ -636,9 +545,9 @@ log "########################"
 log "# 10. Validate Expected errors to render properly (API request flow not broken)"
 log "########################"
 
-validate_expected_error "stop-instances with invalid instance ID" "aws ec2 stop-instances --instance-ids i-0a9e2c2233951dee8" "InvalidInstanceID\.NotFound"
-validate_expected_error "s3 cp to non-existent bucket" "aws s3 cp smallfile.txt s3://combine-endpoint-test-DNE/foo/smallfile.txt/" "NoSuchBucket"
-validate_expected_error "describe-images with invalid AMI" "aws ec2 describe-images --image-ids ami-5731123e" "InvalidAMIID\.NotFound"
+validate_expected_error_match "stop-instances with invalid instance ID" "aws ec2 stop-instances --instance-ids i-0a9e2c2233951dee8" "InvalidInstanceID\.NotFound"
+validate_expected_error_match "s3 cp to non-existent bucket" "aws s3 cp smallfile.txt s3://combine-endpoint-test-DNE/foo/smallfile.txt/" "NoSuchBucket"
+validate_expected_error_match "describe-images with invalid AMI" "aws ec2 describe-images --image-ids ami-5731123e" "InvalidAMIID\.NotFound"
 
 log ""
 log "########################"
@@ -650,8 +559,9 @@ log ""
 log "########################"
 log "# 12. Validate fail with NotFoundException (Testing double encoding of URI)"
 log "########################"
-validate_expected_error "eks tag-resource" "aws eks tag-resource --resource-arn arn:aws-iso:eks:us-iso-east-1:663117128738:cluster/demo --tags Test=Test" "NotFoundException"
-validate_expected_error "eks untag-resource" "aws eks untag-resource --resource-arn arn:aws-iso:eks:us-iso-east-1:663117128738:cluster/demo --tag-keys Test" "NotFoundException"
+
+validate_expected_error_match "eks tag-resource" "aws eks tag-resource --resource-arn arn:aws-iso:eks:us-iso-east-1:663117128738:cluster/demo --tags Test=Test" "NotFoundException"
+validate_expected_error_match "eks untag-resource" "aws eks untag-resource --resource-arn arn:aws-iso:eks:us-iso-east-1:663117128738:cluster/demo --tag-keys Test" "NotFoundException"
 
 log ""
 log "########################"
@@ -685,11 +595,11 @@ log "########################"
 log "# 14. Validate 404 return, if 403 will throw error."
 log "########################"
 
-validate_expected_error "s3 cp URI (foo++)" "aws s3 cp s3://combine-endpoint-test/foo/foo++.txt ." "404"
-validate_expected_error "s3 cp deep URI" "aws s3 cp s3://combine-endpoint-test/foo/foo++//bar/baz///boz.txt ." "404"
-validate_expected_error "head-object foo/foo.txt" "aws s3api head-object --bucket combine-endpoint-test --key foo/foo.txt" "404"
-validate_expected_error "head-object foo/foo++.txt" "aws s3api head-object --bucket combine-endpoint-test --key foo/foo++.txt" "404"
-validate_expected_error "head-object foo//foo++.txt" "aws s3api head-object --bucket combine-endpoint-test --key foo//foo++.txt" "404"
+validate_expected_error_match "s3 cp URI (foo++)" "aws s3 cp s3://combine-endpoint-test/foo/foo++.txt ." "404"
+validate_expected_error_match "s3 cp deep URI" "aws s3 cp s3://combine-endpoint-test/foo/foo++//bar/baz///boz.txt ." "404"
+validate_expected_error_match "head-object foo/foo.txt" "aws s3api head-object --bucket combine-endpoint-test --key foo/foo.txt" "404"
+validate_expected_error_match "head-object foo/foo++.txt" "aws s3api head-object --bucket combine-endpoint-test --key foo/foo++.txt" "404"
+validate_expected_error_match "head-object foo//foo++.txt" "aws s3api head-object --bucket combine-endpoint-test --key foo//foo++.txt" "404"
 
 log ""
 log "########################"
@@ -729,28 +639,28 @@ log "########################"
 log "# 17. Should fail with Unsupported Argument"
 log "########################"
 
-validate_expected_error "s3api put-bucket-accelerate-configuration (should fail)" "aws s3api put-bucket-accelerate-configuration --bucket combine-endpoint-test --accelerate-configuration {}" "" "UnsupportedArgument"
+validate_expected_error_match "s3api put-bucket-accelerate-configuration (should fail)" "aws s3api put-bucket-accelerate-configuration --bucket combine-endpoint-test --accelerate-configuration {}" "" "UnsupportedArgument"
 
 log ""
 log "########################"
 log "# 18. Invalid notification events should fail"
 log "########################"
 
-validate_expected_error "s3api put-bucket-notification-configuration (invalid events)" "aws s3api put-bucket-notification-configuration --bucket combine-endpoint-test --notification-configuration file://s3_bucket_notification.json" "" "InvalidArgument"
+validate_expected_error_match "s3api put-bucket-notification-configuration (invalid events)" "aws s3api put-bucket-notification-configuration --bucket combine-endpoint-test --notification-configuration file://s3_bucket_notification.json" "" "InvalidArgument"
 
 log ""
 log "########################"
 log "# 19. Valid structure but invalid destination should fail"
 log "########################"
 
-validate_expected_error "s3api put-bucket-notification-configuration (invalid destination)" "aws s3api put-bucket-notification-configuration --bucket combine-endpoint-test --notification-configuration file://s3_bucket_notification_valid.json" "" "InvalidArgument"
+validate_expected_error_match "s3api put-bucket-notification-configuration (invalid destination)" "aws s3api put-bucket-notification-configuration --bucket combine-endpoint-test --notification-configuration file://s3_bucket_notification_valid.json" "" "InvalidArgument"
 
 log ""
 log "########################"
 log "# 20. Should fail and give Invalid ARN, testing endpoint resolution"
 log "########################"
 
-validate_expected_error "stepfunctions start-sync-execution (should fail with InvalidArn)" "aws stepfunctions start-sync-execution --state-machine-arn Foo" "" "InvalidArn"
+validate_expected_error_match "stepfunctions start-sync-execution (should fail with InvalidArn)" "aws stepfunctions start-sync-execution --state-machine-arn Foo" "" "InvalidArn"
 
 log ""
 log "########################"
@@ -786,8 +696,8 @@ validate_rewrite_smart "cloudtrail get-trail-status" "aws cloudtrail get-trail-s
 validate_rewrite_smart "cloudtrail put-event-selectors (valid)" "aws cloudtrail put-event-selectors --trail-name CombineTest --event-selectors file://cloudtrail_event_selector_valid.json" ""
 validate_rewrite_smart "cloudtrail get-event-selectors" "aws cloudtrail get-event-selectors --trail-name CombineTest" ""
 
-validate_expected_error "cloudtrail put-event-selectors (invalid S3 ARN)" "aws cloudtrail put-event-selectors --trail-name CombineTest --event-selectors file://cloudtrail_event_selector_invalid_s3.json" "Unexpected Value for ARN"
-validate_expected_error "cloudtrail put-event-selectors (invalid Lambda ARN format)" "aws cloudtrail put-event-selectors --trail-name CombineTest --event-selectors file://cloudtrail_event_selector_invalid_lambda.json" "Unexpected Value for ARN"
+validate_expected_error_match "cloudtrail put-event-selectors (invalid S3 ARN)" "aws cloudtrail put-event-selectors --trail-name CombineTest --event-selectors file://cloudtrail_event_selector_invalid_s3.json" "Unexpected Value for ARN"
+validate_expected_error_match "cloudtrail put-event-selectors (invalid Lambda ARN format)" "aws cloudtrail put-event-selectors --trail-name CombineTest --event-selectors file://cloudtrail_event_selector_invalid_lambda.json" "Unexpected Value for ARN"
 
 aws cloudtrail delete-trail --name "$TRAIL_ARN" >/dev/null 2>&1 && log "🧼 Deleted trail $TRAIL_ARN"
 unset TRAIL_ARN
@@ -829,14 +739,14 @@ log "########################"
 log "# 26. EC2 – Should fail with credential validation error"
 log "########################"
 
-validate_expected_error "ec2 describe-instances (auth failure)" "aws ec2 describe-instances --region us-isob-east-1 --endpoint-url https://ec2.us-iso-east-1.c2s.ic.gov" "AWS was not able to validate the provided access credentials"
+validate_expected_error_match "ec2 describe-instances (auth failure)" "aws ec2 describe-instances --region us-isob-east-1 --endpoint-url https://ec2.us-iso-east-1.c2s.ic.gov" "AWS was not able to validate the provided access credentials"
 
 log ""
 log "########################"
 log "# 27. FIPS endpoint tests"
 log "########################"
 
-validate_expected_error "ec2 describe-regions (fips unsupported)" "aws ec2 describe-regions --endpoint-url https://ec2-fips.us-iso-east-1.c2s.ic.gov" "EmulationError"
+validate_expected_error_match "ec2 describe-regions (fips unsupported)" "aws ec2 describe-regions --endpoint-url https://ec2-fips.us-iso-east-1.c2s.ic.gov" "EmulationError"
 validate_rewrite_smart "kms list-keys (fips)" "aws kms list-keys --endpoint-url https://kms-fips.us-iso-east-1.c2s.ic.gov" ""
 
 log ""
@@ -844,7 +754,7 @@ log "########################"
 log "# 28. Dualstack endpoint tests"
 log "########################"
 
-validate_expected_error "s3api list-buckets (dualstack unsupported)" "aws s3api list-buckets --endpoint-url https://s3.dualstack.us-iso-east-1.c2s.ic.gov" "EmulationError"
+validate_expected_error_match "s3api list-buckets (dualstack unsupported)" "aws s3api list-buckets --endpoint-url https://s3.dualstack.us-iso-east-1.c2s.ic.gov" "EmulationError"
 
 log ""
 log "########################"
@@ -887,17 +797,17 @@ log "########################"
 log "# 32. Glacier – Will fail (however we need to verify the endpoint logs through cloudwatch and I have no idea how to autoamte this currently, so commenting here.)"
 log "########################"
 
-validate_expected_error "glacier initiate-job (should fail)" "aws glacier initiate-job --account-id 663117128738 --vault-name CombineTest --job-parameters file://glacier_job.json" "ResourceNotFoundException"
+validate_expected_error_match "glacier initiate-job (should fail)" "aws glacier initiate-job --account-id 663117128738 --vault-name CombineTest --job-parameters file://glacier_job.json" "ResourceNotFoundException"
 
 log ""
 log "########################"
 log "# 33. ELBv2 Should fail, not implemented"
 log "########################"
 
-validate_expected_error "elbv2 create-load-balancer (not implemented)" "aws elbv2 create-load-balancer --name Foo --type network --subnet-mappings SubnetId=foo SubnetId=bar SubnetId=baz,PrivateIPv4Address=10.0.0.2" "Combine rejected this AWS API because it is not implemented"
-validate_expected_error "elbv2 set-subnets (not implemented)" "aws elbv2 set-subnets --load-balancer-arn Foo --subnet-mappings SubnetId=foo SubnetId=bar SubnetId=baz,PrivateIPv4Address=10.0.0.2" "Combine rejected this AWS API because it is not implemented"
-validate_expected_error "elbv2 create-load-balancer (security groups not implemented)" "aws elbv2 create-load-balancer --name Foo --type network --security-groups foo" "Combine rejected this AWS API because it is not implemented"
-validate_expected_error "elbv2 set-security-groups (not implemented)" "aws elbv2 set-security-groups --load-balancer-arn foo --security-groups foo" "Combine rejected this AWS API because it is not implemented"
+validate_expected_error_match "elbv2 create-load-balancer (not implemented)" "aws elbv2 create-load-balancer --name Foo --type network --subnet-mappings SubnetId=foo SubnetId=bar SubnetId=baz,PrivateIPv4Address=10.0.0.2" "Combine rejected this AWS API because it is not implemented"
+validate_expected_error_match "elbv2 set-subnets (not implemented)" "aws elbv2 set-subnets --load-balancer-arn Foo --subnet-mappings SubnetId=foo SubnetId=bar SubnetId=baz,PrivateIPv4Address=10.0.0.2" "Combine rejected this AWS API because it is not implemented"
+validate_expected_error_match "elbv2 create-load-balancer (security groups not implemented)" "aws elbv2 create-load-balancer --name Foo --type network --security-groups foo" "Combine rejected this AWS API because it is not implemented"
+validate_expected_error_match "elbv2 set-security-groups (not implemented)" "aws elbv2 set-security-groups --load-balancer-arn foo --security-groups foo" "Combine rejected this AWS API because it is not implemented"
 
 log ""
 log "########################"
@@ -949,7 +859,7 @@ log "########################"
 log "# 38. SQS Redrive Policy Failure and Cleanup"
 log "########################"
 
-validate_expected_error "sqs set-queue-attributes (nonexistent queues)" "aws sqs set-queue-attributes --queue-url \"https://sqs.us-iso-east-1.c2s.ic.gov/663117128738/bti360-horizon-sequoia-highlight-uploads-dlq\" --attributes '{\"RedriveAllowPolicy\":\"{\\\"redrivePermission\\\": \\\"byQueue\\\", \\\"sourceQueueArns\\\": [\\\"arn:aws-iso:sqs:us-iso-east-1:663117128738:nonexistent\\\",\\\"arn:aws-iso:sqs:us-iso-east-1:663117128738:also-nonexistent\\\",\\\"arn:aws-iso:sqs:us-iso-east-1:663117128738:lastly-nonexistent\\\"]}\"}'" "AWS.SimpleQueueService.NonExistentQueue"
+validate_expected_error_match "sqs set-queue-attributes (nonexistent queues)" "aws sqs set-queue-attributes --queue-url \"https://sqs.us-iso-east-1.c2s.ic.gov/663117128738/bti360-horizon-sequoia-highlight-uploads-dlq\" --attributes '{\"RedriveAllowPolicy\":\"{\\\"redrivePermission\\\": \\\"byQueue\\\", \\\"sourceQueueArns\\\": [\\\"arn:aws-iso:sqs:us-iso-east-1:663117128738:nonexistent\\\",\\\"arn:aws-iso:sqs:us-iso-east-1:663117128738:also-nonexistent\\\",\\\"arn:aws-iso:sqs:us-iso-east-1:663117128738:lastly-nonexistent\\\"]}\"}'" "AWS.SimpleQueueService.NonExistentQueue"
 
 validate_success "sqs delete-queue (Test2 cleanup)" "aws sqs delete-queue --queue-url https://sqs.us-iso-east-1.c2s.ic.gov/663117128738/Test2"
 
@@ -1043,33 +953,33 @@ log "########################"
 log "# 47. Elasticache encryption violation (actually Combine rejection)"
 log "########################"
 
-validate_expect_combine_rejection "elasticache create-cache-cluster with encryption" "aws elasticache create-cache-cluster --cache-cluster-id foo --transit-encryption-enabled --region us-iso-east-1"
-validate_expect_combine_rejection "elasticache create-replication-group with encryption" "aws elasticache create-replication-group --replication-group-id foo --replication-group-description foo --transit-encryption-enabled --region us-iso-east-1"
-validate_expect_combine_rejection "elasticache modify-replication-group with encryption" "aws elasticache modify-replication-group --replication-group-id foo --transit-encryption-enabled --region us-iso-east-1"
+validate_expected_error_match "elasticache create-cache-cluster with encryption" "aws elasticache create-cache-cluster --cache-cluster-id foo --transit-encryption-enabled --region us-iso-east-1" "Combine rejected this AWS API"
+validate_expected_error_match "elasticache create-replication-group with encryption" "aws elasticache create-replication-group --replication-group-id foo --replication-group-description foo --transit-encryption-enabled --region us-iso-east-1" "Combine rejected this AWS API"
+validate_expected_error_match "elasticache modify-replication-group with encryption" "aws elasticache modify-replication-group --replication-group-id foo --transit-encryption-enabled --region us-iso-east-1" "Combine rejected this AWS API"
 
 log ""
 log "########################"
 log "# 48. OpenSearch and ES domain creation should fail (EBS storage must be selected)"
 log "########################"
 
-validate_expected_error "opensearch create-domain (OpenSearch_2.17)" "aws opensearch create-domain --domain-name foo --engine-version OpenSearch_2.17" "EBS storage must be selected"
-validate_expected_error "opensearch create-domain (Elasticsearch_7.10)" "aws opensearch create-domain --domain-name foo --engine-version Elasticsearch_7.10" "EBS storage must be selected"
-validate_expected_error "es create-elasticsearch-domain (OpenSearch_2.17)" "aws es create-elasticsearch-domain --domain-name foo --elasticsearch-version OpenSearch_2.17" "EBS storage must be selected"
-validate_expected_error "es create-elasticsearch-domain (7.10)" "aws es create-elasticsearch-domain --domain-name foo --elasticsearch-version 7.10" "EBS storage must be selected"
+validate_expected_error_match "opensearch create-domain (OpenSearch_2.17)" "aws opensearch create-domain --domain-name foo --engine-version OpenSearch_2.17" "EBS storage must be selected"
+validate_expected_error_match "opensearch create-domain (Elasticsearch_7.10)" "aws opensearch create-domain --domain-name foo --engine-version Elasticsearch_7.10" "EBS storage must be selected"
+validate_expected_error_match "es create-elasticsearch-domain (OpenSearch_2.17)" "aws es create-elasticsearch-domain --domain-name foo --elasticsearch-version OpenSearch_2.17" "EBS storage must be selected"
+validate_expected_error_match "es create-elasticsearch-domain (7.10)" "aws es create-elasticsearch-domain --domain-name foo --elasticsearch-version 7.10" "EBS storage must be selected"
 
 log ""
 log "########################"
 log "# 49. OpenSearch and ES version tests – should fail with 'Unsupported Elasticsearch Version'"
 log "########################"
 
-validate_expected_error "opensearch create-domain (OpenSearch_2.10)" "aws opensearch create-domain --domain-name foo --engine-version OpenSearch_2.10" "Unsupported Elasticsearch Version"
-validate_expected_error "opensearch upgrade-domain (OpenSearch_2.10)" "aws opensearch upgrade-domain --domain-name foo --target-version OpenSearch_2.10" "Unsupported Elasticsearch Version"
-validate_expected_error "es create-elasticsearch-domain (OpenSearch_2.10)" "aws es create-elasticsearch-domain --domain-name foo --elasticsearch-version OpenSearch_2.10" "Unsupported Elasticsearch Version"
-validate_expected_error "es upgrade-elasticsearch-domain (OpenSearch_2.10)" "aws es upgrade-elasticsearch-domain --domain-name foo --target-version OpenSearch_2.10" "Unsupported Elasticsearch Version"
-validate_expected_error "opensearch create-domain (Elasticsearch_7.3)" "aws opensearch create-domain --domain-name foo --engine-version Elasticsearch_7.3" "Unsupported Elasticsearch Version"
-validate_expected_error "opensearch upgrade-domain (Elasticsearch_7.3)" "aws opensearch upgrade-domain --domain-name foo --target-version Elasticsearch_7.3" "Unsupported Elasticsearch Version"
-validate_expected_error "es create-elasticsearch-domain (Elasticsearch_7.3)" "aws es create-elasticsearch-domain --domain-name foo --elasticsearch-version Elasticsearch_7.3" "Unsupported Elasticsearch Version"
-validate_expected_error "es upgrade-elasticsearch-domain (Elasticsearch_7.3)" "aws es upgrade-elasticsearch-domain --domain-name foo --target-version Elasticsearch_7.3" "Unsupported Elasticsearch Version"
+validate_expected_error_match "opensearch create-domain (OpenSearch_2.10)" "aws opensearch create-domain --domain-name foo --engine-version OpenSearch_2.10" "Unsupported Elasticsearch Version"
+validate_expected_error_match "opensearch upgrade-domain (OpenSearch_2.10)" "aws opensearch upgrade-domain --domain-name foo --target-version OpenSearch_2.10" "Unsupported Elasticsearch Version"
+validate_expected_error_match "es create-elasticsearch-domain (OpenSearch_2.10)" "aws es create-elasticsearch-domain --domain-name foo --elasticsearch-version OpenSearch_2.10" "Unsupported Elasticsearch Version"
+validate_expected_error_match "es upgrade-elasticsearch-domain (OpenSearch_2.10)" "aws es upgrade-elasticsearch-domain --domain-name foo --target-version OpenSearch_2.10" "Unsupported Elasticsearch Version"
+validate_expected_error_match "opensearch create-domain (Elasticsearch_7.3)" "aws opensearch create-domain --domain-name foo --engine-version Elasticsearch_7.3" "Unsupported Elasticsearch Version"
+validate_expected_error_match "opensearch upgrade-domain (Elasticsearch_7.3)" "aws opensearch upgrade-domain --domain-name foo --target-version Elasticsearch_7.3" "Unsupported Elasticsearch Version"
+validate_expected_error_match "es create-elasticsearch-domain (Elasticsearch_7.3)" "aws es create-elasticsearch-domain --domain-name foo --elasticsearch-version Elasticsearch_7.3" "Unsupported Elasticsearch Version"
+validate_expected_error_match "es upgrade-elasticsearch-domain (Elasticsearch_7.3)" "aws es upgrade-elasticsearch-domain --domain-name foo --target-version Elasticsearch_7.3" "Unsupported Elasticsearch Version"
 
 log ""
 log "########################"
@@ -1131,7 +1041,7 @@ log "########################"
 log "# 54. RDS instance type will fail due to instance type"
 log "########################"
 
-validate_expect_combine_rejection "unsupported RDS instance type" "aws rds create-db-instance --master-username combineadmin --master-user-password Combine1275317 --db-subnet-group-name tf-combine-endpoints-test-subnet-group --db-instance-identifier CombineEndpointTestInstanceInvalid --db-instance-class $UNSUPPORTED_INSTANCE_TYPE --allocated-storage 8 --engine mysql --availability-zone us-iso-east-1a"
+validate_expected_error_match "unsupported RDS instance type" "aws rds create-db-instance --master-username combineadmin --master-user-password Combine1275317 --db-subnet-group-name tf-combine-endpoints-test-subnet-group --db-instance-identifier CombineEndpointTestInstanceInvalid --db-instance-class \$UNSUPPORTED_INSTANCE_TYPE --allocated-storage 8 --engine mysql --availability-zone us-iso-east-1a" "Combine rejected this AWS API"
 validate_rewrite_smart "create-db-instance supported type" "aws rds create-db-instance --master-username combineadmin --master-user-password Combine1275317 --db-subnet-group-name tf-combine-endpoints-test-subnet-group --db-instance-identifier CombineEndpointTestInstance --db-instance-class db.m5.large --allocated-storage 8 --engine mysql --availability-zone us-iso-east-1a"
 validate_success "delete-db-instance supported type" "aws rds delete-db-instance --skip-final-snapshot --db-instance-identifier CombineEndpointTestInstance"
 
@@ -1147,9 +1057,9 @@ log "########################"
 log "# 56. EMR unsupported instance types"
 log "########################"
 
-validate_expect_combine_rejection "emr create-cluster with instance-type $UNSUPPORTED_EMR_TYPE_1" "aws emr create-cluster --release-label emr-7.9.0 --instance-type $UNSUPPORTED_EMR_TYPE_1 --use-default-roles"
-validate_expect_combine_rejection "emr create-cluster with instance-groups $UNSUPPORTED_EMR_TYPE_1 and $UNSUPPORTED_EMR_TYPE_2" "aws emr create-cluster --release-label emr-7.9.0 --instance-groups InstanceType=$UNSUPPORTED_EMR_TYPE_1,InstanceGroupType=foo,InstanceCount=1 InstanceType=$UNSUPPORTED_EMR_TYPE_2,InstanceGroupType=foo,InstanceCount=1 --use-default-roles"
-validate_expect_combine_rejection "emr create-cluster with instance-fleets $UNSUPPORTED_EMR_TYPE_1 and $UNSUPPORTED_EMR_TYPE_2" "aws emr create-cluster --release-label emr-7.9.0 --instance-fleets InstanceFleetType=foo,InstanceTypeConfigs={InstanceType=$UNSUPPORTED_EMR_TYPE_1} InstanceFleetType=foo,InstanceTypeConfigs={InstanceType=$UNSUPPORTED_EMR_TYPE_2} --use-default-roles"
+validate_expected_error_match "emr create-cluster with instance-type $UNSUPPORTED_EMR_TYPE_1" "aws emr create-cluster --release-label emr-7.9.0 --instance-type $UNSUPPORTED_EMR_TYPE_1 --use-default-roles" "Instance type '$UNSUPPORTED_EMR_TYPE_1' is not supported."
+validate_expected_error_match "emr create-cluster with instance-groups (starts with $UNSUPPORTED_EMR_TYPE_1)" "aws emr create-cluster --release-label emr-7.9.0 --instance-groups InstanceType=$UNSUPPORTED_EMR_TYPE_1,InstanceGroupType=foo,InstanceCount=1 InstanceType=$UNSUPPORTED_EMR_TYPE_2,InstanceGroupType=foo,InstanceCount=1 --use-default-roles" "Instance type '$UNSUPPORTED_EMR_TYPE_1' is not supported."
+validate_expected_error_match "emr create-cluster with instance-fleets (starts with $UNSUPPORTED_EMR_TYPE_1)" "aws emr create-cluster --release-label emr-7.9.0 --instance-fleets InstanceFleetType=foo,InstanceTypeConfigs={InstanceType=$UNSUPPORTED_EMR_TYPE_1} InstanceFleetType=foo,InstanceTypeConfigs={InstanceType=$UNSUPPORTED_EMR_TYPE_2} --use-default-roles" "Instance type '$UNSUPPORTED_EMR_TYPE_1' is not supported."
 
 log ""
 log "########################"
