@@ -169,6 +169,28 @@ cat > events.json <<EOF
 ]
 EOF
 
+cat > test_sns.json <<EOF
+{
+  "Policy": "{\"Version\":\"2008-10-17\",\"Id\":\"__default_policy_ID\",\"Statement\":[{\"Sid\":\"__default_statement_ID\",\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"*\"},\"Action\":[\"SNS:GetTopicAttributes\",\"SNS:SetTopicAttributes\",\"SNS:AddPermission\",\"SNS:RemovePermission\",\"SNS:DeleteTopic\",\"SNS:Subscribe\",\"SNS:ListSubscriptionsByTopic\",\"SNS:Publish\"],\"Resource\":\"arn:aws-iso:sns:us-iso-east-1:663117128738:Test\",\"Condition\":{\"StringEquals\":{\"AWS:SourceOwner\":\"663117128738\"}}}]}",
+  "KmsMasterKeyId": "arn:aws-iso:kms:us-iso-east-1:663117128738:key/1c420142-fcc7-492a-a5b7-892bb3764ab7"
+}
+EOF
+
+echo '{
+  "Id": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "elasticfilesystem:ClientMount"
+      ],
+      "Principal": {
+        "AWS": "arn:aws-iso:iam::663117128738:root"
+      }
+    }
+  ]
+}' > efs-policy.json
+
 log "🧪 Starting validation test suite..."
 
 ###########################################
@@ -1281,4 +1303,72 @@ validate_success "lambda delete-alias" "aws lambda delete-alias --function-name 
 validate_rewrite_smart "lambda list-functions ALL" "aws lambda list-functions --function-version ALL"
 validate_rewrite_smart "lambda list-functions master region" "aws lambda list-functions --master-region us-iso-east-1 --function-version ALL"
 
+log ""
+log "########################"
+log "# 74. EC2 Run + Terminate Instance"
+log "########################"
+
+validate_rewrite_smart "ec2 run-instances" "aws ec2 run-instances --image-id ami-0d5eff06f840b45e9 --subnet-id $SUBNET_1 --instance-type t3.nano --placement AvailabilityZone=us-iso-east-1a" "" ".Instances[0].InstanceId" "EC2_INSTANCE_ID"
+validate_success "ec2 terminate-instances" "aws ec2 terminate-instances --instance-ids $EC2_INSTANCE_ID" "shutting-down"
+
+log ""
+log "########################"
+log "# 75. SNS topic create/get/set/delete (rewrites and success)"
+log "########################"
+
+validate_rewrite_smart "sns create-topic" "aws sns create-topic --name Test --attributes file://test_sns.json" "" ".TopicArn" "SNS_TOPIC_ARN"
+validate_rewrite_smart "sns get-topic-attributes (after create)" "aws sns get-topic-attributes --topic-arn \$SNS_TOPIC_ARN"
+validate_success "sns set-topic-attributes" "aws sns set-topic-attributes --topic-arn \$SNS_TOPIC_ARN --attribute-name Policy --attribute-value '{\"Version\":\"2008-10-17\",\"Id\":\"__default_policy_ID\",\"Statement\":[{\"Sid\":\"__default_statement_ID\",\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"*\"},\"Action\":[\"SNS:GetTopicAttributes\",\"SNS:SetTopicAttributes\",\"SNS:AddPermission\",\"SNS:RemovePermission\",\"SNS:DeleteTopic\",\"SNS:Subscribe\",\"SNS:ListSubscriptionsByTopic\",\"SNS:Publish\"],\"Resource\":\"\$SNS_TOPIC_ARN\",\"Condition\":{\"StringEquals\":{\"AWS:SourceOwner\":\"663117128738\"}}}]}'"
+validate_rewrite_smart "sns get-topic-attributes (after set)" "aws sns get-topic-attributes --topic-arn \$SNS_TOPIC_ARN"
+validate_success "sns delete-topic" "aws sns delete-topic --topic-arn \$SNS_TOPIC_ARN"
+validate_rewrite_smart "sqs create-queue (Test2)" "aws sqs create-queue --queue-name Test2"
+validate_rewrite_smart "sns create-topic (Test2)" "aws sns create-topic --name Test2"
+validate_success "sns tag-resource" "aws sns tag-resource --resource-arn arn:aws-iso:sns:us-iso-east-1:663117128738:Test2 --tags Key=Test,Value=Test"
+validate_rewrite_smart "sns list-topics" "aws sns list-topics"
+validate_success "sns untag-resource" "aws sns untag-resource --resource-arn arn:aws-iso:sns:us-iso-east-1:663117128738:Test2 --tag-keys Test"
+validate_rewrite_smart "sns subscribe to SQS queue" "aws sns subscribe --topic-arn arn:aws-iso:sns:us-iso-east-1:663117128738:Test2 --protocol sqs --notification-endpoint arn:aws-iso:sqs:us-iso-east-1:663117128738:Test2" "" ".SubscriptionArn" "SUBSCRIPTION_ARN"
+validate_rewrite_smart "sns list-subscriptions" "aws sns list-subscriptions"
+validate_rewrite_smart "sns list-subscriptions-by-topic" "aws sns list-subscriptions-by-topic --topic-arn arn:aws-iso:sns:us-iso-east-1:663117128738:Test2"
+validate_success "sns publish (target-arn)" "aws sns publish --target-arn arn:aws-iso:sns:us-iso-east-1:663117128738:Test2 --message {}"
+validate_success "sns publish (topic-arn)" "aws sns publish --topic-arn arn:aws-iso:sns:us-iso-east-1:663117128738:Test2 --message {}"
+validate_success "sns unsubscribe" "aws sns unsubscribe --subscription-arn \$SUBSCRIPTION_ARN"
+validate_success "sns delete-topic (Test2)" "aws sns delete-topic --topic-arn arn:aws-iso:sns:us-iso-east-1:663117128738:Test2"
+validate_success "sqs delete-queue (Test2)" "aws sqs delete-queue --queue-url https://sqs.us-iso-east-1.c2s.ic.gov/663117128738/Test2"
+
+log ""
+log "########################"
+log "# 76. EFS create + policy and access point validation"
+log "########################"
+
+validate_rewrite_smart "efs create-file-system" "aws efs create-file-system --performance-mode generalPurpose --throughput-mode bursting" "" ".FileSystemId" "FS_ID"
+validate_rewrite_smart "efs put-file-system-policy" "aws efs put-file-system-policy --file-system-id \$FS_ID --policy file://efs-policy.json"
+validate_rewrite_smart "efs describe-file-systems" "aws efs describe-file-systems"
+validate_rewrite_smart "efs describe-file-system-policy" "aws efs describe-file-system-policy --file-system-id \$FS_ID"
+validate_rewrite_smart "efs describe-access-points" "aws efs describe-access-points"
+validate_success "efs delete-file-system" "aws efs delete-file-system --file-system-id \$FS_ID"
+
+log ""
+log "########################"
+log "# 77. STS assume-role rewrite validation"
+log "########################"
+
+validate_rewrite_smart "sts assume-role (us-iso)" "aws sts assume-role --role-arn arn:aws-iso:iam::663117128738:role/Combine-TS-WLDEVELOPER --role-session-name Test"
+validate_rewrite_smart "sts assume-role (us-isob)" "aws sts assume-role --role-arn arn:aws-iso-b:iam::663117128738:role/Combine-S-WLDEVELOPER --role-session-name Test" "us-isob-east-1"
+
+log ""
+log "########################"
+log "# 78. App Autoscaling rewrite validation"
+log "########################"
+
+validate_rewrite_smart "application-autoscaling describe-scalable-targets" "aws application-autoscaling describe-scalable-targets --service-namespace dynamodb"
+
+log ""
+log "########################"
+log "# 79. IAM policy create/delete with rewritten EFS ARNs"
+log "########################"
+
+validate_rewrite_smart "iam create-policy (us-iso)" "aws iam create-policy --policy-name Test --policy-document '{\"Statement\":[{\"Action\":[\"elasticfilesystem:DescribeMountTargets\",\"elasticfilesystem:ClientWrite\",\"elasticfilesystem:ClientRootAccess\",\"elasticfilesystem:ClientMount\"],\"Effect\":\"Allow\",\"Resource\":\"arn:aws-iso:elasticfilesystem:us-iso-east-1:123456789123:file-system/fs-11111111111111111\",\"Sid\":\"AllowRW\"}],\"Version\":\"2012-10-17\"}'"
+validate_success "iam delete-policy (us-iso)" "aws iam delete-policy --policy-arn arn:aws-iso:iam::663117128738:policy/Test"
+validate_rewrite_smart "iam create-policy (us-isob)" "aws iam create-policy --policy-name Test --policy-document '{\"Statement\":[{\"Action\":[\"elasticfilesystem:DescribeMountTargets\",\"elasticfilesystem:ClientWrite\",\"elasticfilesystem:ClientRootAccess\",\"elasticfilesystem:ClientMount\"],\"Effect\":\"Allow\",\"Resource\":\"arn:aws-iso-b:elasticfilesystem:us-isob-east-1:123456789123:file-system/fs-11111111111111111\",\"Sid\":\"AllowRW\"}],\"Version\":\"2012-10-17\"}'" "us-isob-east-1"
+validate_success "iam delete-policy (us-isob)" "aws iam delete-policy --policy-arn arn:aws-iso-b:iam::663117128738:policy/Test" "us-isob-east-1"
 
