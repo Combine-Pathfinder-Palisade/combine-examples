@@ -85,6 +85,23 @@ resource "aws_iam_role" "tf_combine_test_role" {
   })
 }
 
+resource "aws_iam_role" "tf_combine_test_cw_events_role" {
+  name = "TfCombineTestCWEventsRole"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Principal = {
+          Service = "events.amazonaws.com"
+        },
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
 resource "aws_iam_policy" "tf_combine_test_policy" {
   name = "TfCombineTest"
   policy = jsonencode({
@@ -229,6 +246,7 @@ resource "aws_elb" "tf_combine_test_elb" {
   subnets  = [var.subnet_1]
 }
 
+#Loadbalancer will fail when trying to update due to Combine limitation
 resource "aws_lb" "tf_combine_lb" {
   name               = "Bar"
   internal           = true

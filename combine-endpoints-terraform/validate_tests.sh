@@ -26,6 +26,7 @@ log "📁 Preparing test files..."
 
 echo "Foo Bar Baz" > test_cli_upload.txt
 echo "How is your monkey's uncle?" > test_cli_presign_upload.txt
+echo 'Wild monkey attack!!!' > test.encrypt
 
 # S3 Notification Config JSON
 cat > s3_bucket_notification.json <<EOF
@@ -145,6 +146,29 @@ cat > test_queue_isob.json <<EOF
 }
 EOF
 
+cat > events.json <<EOF
+[
+  {
+    "Source": "com.mycompany.myapp",
+    "Detail": "{ \"foo\": \"foo\", \"fooUser\": \"arn:aws-iso:iam::663117128738:user/master\" }",
+    "Resources": [
+      "arn:aws-iso:lambda:us-iso-east-1:663117128738:function:CombineTest",
+      "arn:aws-iso:sns:us-iso-east-1:663117128738:CombineEndpointsTest"
+    ],
+    "DetailType": "Foo"
+  },
+  {
+    "Source": "com.mycompany.myapp",
+    "Detail": "{ \"bar\": \"bar\", \"barRegion\": \"us-iso-east-1\" }",
+    "Resources": [
+      "arn:aws-iso:lambda:us-iso-east-1:663117128738:function:CombineTest",
+      "arn:aws-iso:sns:us-iso-east-1:663117128738:CombineEndpointsTest"
+    ],
+    "DetailType": "Bar"
+  }
+]
+EOF
+
 log "🧪 Starting validation test suite..."
 
 ###########################################
@@ -231,7 +255,7 @@ validate_expected_error_match() {
 validate_instance_type_absent_grep() {
   local label="$1"
   local command="$2"
-  local forbidden="m7a.large"
+  local forbidden="$3"
 
   printf "🔍 %s: " "$label"
   output=$(eval "$command" 2>/dev/null)
@@ -493,10 +517,10 @@ log "# 5. Instance Type Filtering"
 log "# These should run but m7a.large must NOT be in the results"
 log "########################"
 
-validate_instance_type_absent_grep "instance-type-offerings (filtered)" "aws ec2 describe-instance-type-offerings --filters Name=instance-type,Values=m5.*,m7a.large"
-validate_instance_type_absent_grep "describe-instance-types (filtered)" "aws ec2 describe-instance-types --filters Name=instance-type,Values=m5.large,m7a.large"
-validate_instance_type_absent_grep "instance-type-offerings (raw)" "aws ec2 describe-instance-type-offerings"
-validate_instance_type_absent_grep "describe-instance-types (raw)" "aws ec2 describe-instance-types"
+validate_instance_type_absent_grep "instance-type-offerings (filtered)" "aws ec2 describe-instance-type-offerings --filters Name=instance-type,Values=m5.*,m7a.large" "m7a.large"
+validate_instance_type_absent_grep "describe-instance-types (filtered)" "aws ec2 describe-instance-types --filters Name=instance-type,Values=m5.large,m7a.large" "m7a.large"
+validate_instance_type_absent_grep "instance-type-offerings (raw)" "aws ec2 describe-instance-type-offerings" "m7a.large"
+validate_instance_type_absent_grep "describe-instance-types (raw)" "aws ec2 describe-instance-types" "m7a.large"
 
 log ""
 log "########################"
@@ -1077,4 +1101,184 @@ validate_success "kms put-key-policy 4 (isob region)" "aws kms put-key-policy --
 validate_rewrite_smart "kms get-key-policy 4 (isob region)" "aws kms get-key-policy --key-id $KEY_ID --policy-name default"
 validate_success "kms put-key-policy 5 (commercial ec2 test)" "aws kms put-key-policy --key-id $KEY_ID --policy-name default --policy '{ \"Version\" : \"2012-10-17\", \"Id\" : \"key-default-1\", \"Statement\" : [ { \"Effect\" : \"Allow\", \"Principal\" : { \"AWS\":\"arn:aws-iso-b:iam::663117128738:root\", \"Service\" : \"ec2.amazonaws.com\" }, \"Action\" : \"kms:*\", \"Resource\" : \"*\" }, { \"Effect\": \"Allow\", \"Principal\": { \"Service\": \"ec2.amazonaws.com\" }, \"Action\": [ \"kms:Encrypt*\", \"kms:Decrypt*\", \"kms:ReEncrypt*\", \"kms:GenerateDataKey*\", \"kms:Describe*\", \"kms:List*\" ], \"Resource\": \"*\", \"Condition\": { \"StringEquals\": { \"kms:ViaService\": \"ec2.us-isob-east-1.amazonaws.com\" } } } ] }' --region us-isob-east-1"
 validate_rewrite_smart "kms get-key-policy 5 (commercial ec2 test)" "aws kms get-key-policy --key-id $KEY_ID --policy-name default"
+validate_rewrite_smart "kms create-key" "aws kms create-key --policy '{ \"Version\" : \"2012-10-17\", \"Id\" : \"key-default-1\", \"Statement\" : [ { \"Effect\" : \"Allow\", \"Principal\" : { \"AWS\" : \"arn:aws-iso:iam::663117128738:root\" }, \"Action\" : \"kms:*\", \"Resource\" : \"*\" } ] }'" "" ".KeyMetadata.KeyId" "KEY_ID"
+validate_success "kms create-grant" "aws kms create-grant --key-id \$KEY_ID --grantee-principal arn:aws-iso:iam::663117128738:role/Combine-Dev-TS-WLDEVELOPER --operations Decrypt --constraints EncryptionContextSubset={Department=IT} --retiring-principal arn:aws-iso:iam::663117128738:root" "__nonempty__"
+validate_rewrite_smart "kms list-grants" "aws kms list-grants --key-id \$KEY_ID" "" ".Grants[0].GrantId" "GRANT_ID"
+validate_success "kms retire-grant" "aws kms retire-grant --key-id arn:aws-iso:kms:us-iso-east-1:663117128738:key/\$KEY_ID --grant-id \$GRANT_ID"
+validate_success "kms create-alias" "aws kms create-alias --alias-name alias/Test --target-key-id \$KEY_ID"
+validate_success "kms list-aliases" "aws kms list-aliases" "alias/Test"
+validate_success "kms delete-alias" "aws kms delete-alias --alias-name alias/Test"
+validate_rewrite_smart "kms encrypt (file input)" "aws kms encrypt --key-id \$KEY_ID --plaintext fileb://test.encrypt" "" ".CiphertextBlob" "ENCRYPTED_BLOB"
+validate_success "kms encrypt + save output to file" "aws kms encrypt --key-id \$KEY_ID --plaintext fileb://test.encrypt --output text --query CiphertextBlob | base64 --decode > test.decrypt"
+validate_success "kms decrypt + save output to file" "aws kms decrypt --key-id \$KEY_ID --ciphertext-blob fileb://test.decrypt --output text --query Plaintext | base64 --decode > test.unencrypted"
+
+# Check that decrypted output matches original input LRM maybe circle back to this.. I hate having specific checks.. 
+if cmp -s test.encrypt test.unencrypted; then
+  echo "✅ KMS encrypt/decrypt roundtrip succeeded (files match)"
+else
+  echo "❌ KMS encrypt/decrypt roundtrip failed (files do NOT match)"
+  exit 1
+fi
+
+validate_rewrite_smart "kms schedule-key-deletion" "aws kms schedule-key-deletion --key-id \$KEY_ID --pending-window-in-days 7 --endpoint-url https://kms.us-iso-east-1.c2s.ic.gov" "" ".KeyId"
+
+log ""
+log "########################"
+log "# 58. SQS create + delete queue and DLQ source listing"
+log "########################"
+
+validate_rewrite_smart "sqs create-queue (returns URL)" "aws sqs create-queue --queue-name combine-endpoints-create-test" "" ".QueueUrl" "TEST_QUEUE_URL"
+validate_rewrite_smart "sqs list-queues" "aws sqs list-queues"
+validate_rewrite_smart "sqs get-queue-url" "aws sqs get-queue-url --queue-name combine-endpoints-create-test"
+validate_success "sqs delete-queue" "aws sqs delete-queue --queue-url \$TEST_QUEUE_URL"
+validate_success "sqs list-dead-letter-source-queues" "aws sqs list-dead-letter-source-queues --queue-url https://sqs.us-iso-east-1.c2s.ic.gov/663117128738/combine-endpoints-test-dead-letter"
+
+log ""
+log "########################"
+log "# 59. EC2 describe-instance-type-offerings plus verify unsuported type is not returned"
+log "########################"
+
+validate_rewrite_smart "ec2 describe-instance-type-offerings (default region)" "aws ec2 describe-instance-type-offerings"
+validate_rewrite_smart "ec2 describe-instance-type-offerings (ISOB region)" "aws ec2 describe-instance-type-offerings --region us-isob-east-1"
+validate_instance_type_absent_grep "instance-type-offerings (t2.nano filtering)" "aws ec2 describe-instance-type-offerings --filters Name=instance-type,Values=t2.nano,t2.micro,t3.nano" "t2.nano"
+
+log ""
+log "########################"
+log "# 60. Reserved Instance Offerings – filter by instance type"
+log "########################"
+
+validate_success "describe-reserved-instances-offerings (m5.large – should return data)" "aws ec2 describe-reserved-instances-offerings --availability-zone us-iso-east-1a --filters Name=availability-zone,Values=us-iso-east-1a --instance-type m5.large" "__nonempty__"
+validate_instance_type_absent_grep "describe-reserved-instances-offerings (m6a.large – should not appear)" "aws ec2 describe-reserved-instances-offerings --availability-zone us-iso-east-1a --filters Name=availability-zone,Values=us-iso-east-1a --instance-type m6a.large" "m6a.large"
+
+log ""
+log "########################"
+log "# 61. EC2 Invalid Instance Type – should fail with expected error"
+log "########################"
+
+validate_expected_error_match "ec2 run-instances with invalid instance type" "aws ec2 run-instances --instance-type m7a.large" "The following supplied instance types do not exist"
+validate_expected_error_match "ec2 modify-instance-attribute (Value=...)" "aws ec2 modify-instance-attribute --instance-id i-12345678901234567 --instance-type Value=m7a.large" "The following supplied instance types do not exist"
+validate_expected_error_match "ec2 modify-instance-attribute (--attribute ... --value)" "aws ec2 modify-instance-attribute --instance-id i-12345678901234567 --attribute instanceType --value m7a.large" "The following supplied instance types do not exist"
+validate_expected_error_match "ec2 create-launch-template (invalid instance type)" "aws ec2 create-launch-template --launch-template-name Test --launch-template-data InstanceType=m7a.large" "The following supplied instance types do not exist"
+
+log ""
+log "########################"
+log "# 62. Elasticache invalid node types – should fail with expected errors"
+log "########################"
+
+validate_expected_error_match "elasticache create-replication-group (invalid node type)" "aws elasticache create-replication-group --cache-node-type cache.r7g.large --replication-group-id foo --replication-group-description bar" "Cache Node Type specified is not a valid node type."
+validate_expected_error_match "elasticache create-cache-cluster (invalid node type)" "aws elasticache create-cache-cluster --cache-node-type cache.r7g.large --cache-cluster-id foo --engine redis" "Invalid Cache Node Type:"
+validate_expected_error_match "elasticache modify-replication-group (invalid node type)" "aws elasticache modify-replication-group --cache-node-type cache.r7g.large --replication-group-id foo" "Cache Node Type specified is not a valid node type."
+validate_expected_error_match "elasticache modify-cache-cluster (invalid node type)" "aws elasticache modify-cache-cluster --cache-node-type cache.r7g.large --cache-cluster-id foo" "Invalid Cache Node Type:"
+
+log ""
+log "########################"
+log "# 63. CloudWatch alarm creation, tagging, and cleanup – verify rewrites and deletion"
+log "########################"
+
+validate_success "cloudwatch put-metric-alarm (create alarm)" "aws cloudwatch put-metric-alarm --alarm-name CombineTest --metric-name CPUUtilization --namespace AWS/EC2 --statistic Average --period 300 --threshold 70 --comparison-operator GreaterThanThreshold --dimensions Name=InstanceId,Value=i-12345678912 --evaluation-periods 2 --ok-actions arn:aws-iso:sns:us-iso-east-1:663117128738:CombineEndpointsTest --insufficient-data-actions arn:aws-iso:sns:us-iso-east-1:663117128738:CombineEndpointsTest --alarm-actions arn:aws-iso:sns:us-iso-east-1:663117128738:CombineEndpointsTest --unit Percent"
+validate_rewrite_smart "cloudwatch describe-alarms (rewrite check)" "aws cloudwatch describe-alarms --action-prefix arn:aws-iso:sns:us-iso-east-1:663117128738:CombineEndpointsTest"
+validate_rewrite_smart "cloudwatch list-tags-for-resource (no tags expected)" "aws cloudwatch list-tags-for-resource --resource-arn arn:aws-iso:cloudwatch:us-iso-east-1:663117128738:alarm:TargetTracking-table/combine-endpoints-test-gt-AlarmLow-d7a4c741-a3fc-47ba-8986-65fa8fc454eb"
+validate_success "cloudwatch delete-alarms" "aws cloudwatch delete-alarms --alarm-names CombineTest"
+validate_rewrite_smart "cloudwatch describe-alarms (should be empty after delete)" "aws cloudwatch describe-alarms --action-prefix arn:aws-iso:sns:us-iso-east-1:663117128738:CombineEndpointsTest"
+
+log ""
+log "########################"
+log "# 64. KMS – FIPS endpoint rewrite validation"
+log "########################"
+
+validate_rewrite_smart "kms list-keys (fips endpoint)" "aws kms list-keys --endpoint-url https://kms-fips.us-iso-east-1.c2s.ic.gov"
+
+log ""
+log "########################"
+log "# 65. CloudWatch Events rule and bus lifecycle"
+log "########################"
+
+validate_rewrite_smart "events create-event-bus" "aws events create-event-bus --name CombineTest"
+validate_rewrite_smart "events describe-event-bus" "aws events describe-event-bus --name arn:aws-iso:events:us-iso-east-1:663117128738:event-bus/CombineTest"
+validate_rewrite_smart "events put-rule" "aws events put-rule --name CombineTest --event-pattern '{\"source\":[\"com.mycompany.myapp\"]}' --role-arn arn:aws-iso:iam::663117128738:role/CombineTestCWEventsRole --event-bus-name arn:aws-iso:events:us-iso-east-1:663117128738:event-bus/CombineTest"
+validate_rewrite_smart "events describe-rule" "aws events describe-rule --name CombineTest --event-bus-name arn:aws-iso:events:us-iso-east-1:663117128738:event-bus/CombineTest"
+validate_rewrite_smart "events put-targets" "aws events put-targets --rule CombineTest --event-bus-name arn:aws-iso:events:us-iso-east-1:663117128738:event-bus/CombineTest --targets Id=Foo,Arn=arn:aws-iso:lambda:us-iso-east-1:663117128738:function:CombineTest"
+validate_rewrite_smart "events list-targets-by-rule" "aws events list-targets-by-rule --rule CombineTest --event-bus-name arn:aws-iso:events:us-iso-east-1:663117128738:event-bus/CombineTest"
+validate_success "events put-events (events.json)" "aws events put-events --entries file://events.json"
+validate_success "events remove-targets" "aws events remove-targets --event-bus-name arn:aws-iso:events:us-iso-east-1:663117128738:event-bus/CombineTest --rule CombineTest --ids Foo"
+validate_success "events delete-rule" "aws events delete-rule --name CombineTest --event-bus-name arn:aws-iso:events:us-iso-east-1:663117128738:event-bus/CombineTest"
+validate_success "events delete-event-bus" "aws events delete-event-bus --name CombineTest"
+
+log ""
+log "########################"
+log "# 66. CloudWatch Logs + disallowed KMS key usage"
+log "########################"
+
+validate_expected_error_match "logs associate-kms-key with disallowed KMS key" "aws logs associate-kms-key --log-group-name Foo --kms-key-id arn:aws-iso:kms:us-iso-east-1:663117128738:key/778b96a8-e41c-4a4d-a09e-368526bbf0d4" "is not allowed to be used with"
+validate_expected_error_match "logs create-log-group with disallowed KMS key" "aws logs create-log-group --log-group-name KmsKeyTest --kms-key-id arn:aws-iso:kms:us-iso-east-1:663117128738:key/778b96a8-e41c-4a4d-a09e-368526bbf0d4" "is not allowed to be used with"
+
+log ""
+log "########################"
+log "# 67. CloudWatch Logs - describe log groups and streams"
+log "########################"
+
+validate_rewrite_smart "logs describe-log-groups" "aws logs describe-log-groups --max-items 5"
+validate_rewrite_smart "logs describe-log-streams" "aws logs describe-log-streams --log-group-name Combine_Dev_Log_Group_Endpoint --max-items 5"
+
+log ""
+log "########################"
+log "# 68. Autoscaling group and notification validation"
+log "########################"
+
+validate_rewrite_smart "autoscaling describe-auto-scaling-groups" "aws autoscaling describe-auto-scaling-groups --region us-isob-east-1"
+validate_rewrite_smart "autoscaling describe-auto-scaling-instances" "aws autoscaling describe-auto-scaling-instances --region us-isob-east-1"
+validate_success "autoscaling put-notification-configuration" "aws autoscaling put-notification-configuration --auto-scaling-group-name Dev-Combine-ASG-Endpoints --topic-arn arn:aws-iso:sns:us-iso-east-1:663117128738:CombineEndpointsTest --notification-types autoscaling:EC2_INSTANCE_LAUNCH"
+validate_success "autoscaling delete-notification-configuration" "aws autoscaling delete-notification-configuration --auto-scaling-group-name Dev-Combine-ASG-Endpoints --topic-arn arn:aws-iso:sns:us-iso-east-1:663117128738:CombineEndpointsTest"
+
+log ""
+log "########################"
+log "# 69. Launch Template with ARNs and rewrite validation"
+log "########################"
+
+validate_rewrite_smart "ec2 create-launch-template" "aws ec2 create-launch-template --launch-template-name EndpointsTest --version-description V1 --launch-template-data '{\"Placement\":{\"AvailabilityZone\":\"us-iso-east-1a\", \"HostResourceGroupArn\":\"arn:aws-iso:resource-groups:us-iso-east-1:663117128738:group/Test\"}, \"CapacityReservationSpecification\":{\"CapacityReservationTarget\":{\"CapacityReservationResourceGroupArn\":\"arn:aws-iso:resource-groups:us-iso-east-1:663117128738:group/Test\"}}, \"NetworkInterfaces\":[{\"AssociatePublicIpAddress\":true,\"DeviceIndex\":0,\"Ipv6AddressCount\":1,\"SubnetId\":\"subnet-0dcfd5cd50ad0ca6c\"}],\"IamInstanceProfile\":{\"Arn\":\"arn:aws-iso:iam::663117128738:instance-profile/Combine-Policy-TSInstanceProfileWLDEVELOPER-lSJ9VTfXTkEb\"}, \"BlockDeviceMappings\":[{\"DeviceName\":\"/dev/xvda\",\"Ebs\":{ \"Encrypted\":\"true\", \"KmsKeyId\":\"arn:aws-iso:kms:us-iso-east-1:663117128738:key/778b96a8-e41c-4a4d-a09e-368526bbf0d4\", \"DeleteOnTermination\":true }}],\"ImageId\":\"ami-06a0cd9728546d178\",\"InstanceType\":\"t3.micro\"}'"
+validate_rewrite_smart "ec2 describe-launch-templates" "aws ec2 describe-launch-templates --launch-template-names EndpointsTest"
+validate_rewrite_smart "ec2 describe-launch-template-versions" "aws ec2 describe-launch-template-versions --launch-template-name EndpointsTest --versions 1"
+validate_success "ec2 delete-launch-template" "aws ec2 delete-launch-template --launch-template-name EndpointsTest"
+
+log ""
+log "########################"
+log "# 70. Launch Template with unsupported HttpProtocol metadata option"
+log "########################"
+
+validate_expected_error_match "ec2 create-launch-template with unsupported HttpProtocol" "aws ec2 create-launch-template --launch-template-name Endpoints --launch-template-data '{\"MetadataOptions\":{\"HttpEndpoint\":\"enabled\", \"HttpPutResponseHopLimit\":\"1\", \"HttpTokens\":\"optional\", \"HttpProtocolIpv6\":\"disabled\", \"InstanceMetadataTags\":\"disabled\"}, \"NetworkInterfaces\":[{\"DeviceIndex\":0,\"AssociatePublicIpAddress\":true,\"Groups\":[\"sg-07b37d46d6465878b\"],\"DeleteOnTermination\":true}],\"ImageId\":\"ami-01eccbf80522b562b\",\"InstanceType\":\"t3.nano\",\"TagSpecifications\":[{\"ResourceType\":\"instance\",\"Tags\":[{\"Key\":\"environment\",\"Value\":\"Test\"},{\"Key\":\"purpose\",\"Value\":\"Test\"}]},{\"ResourceType\":\"volume\",\"Tags\":[{\"Key\":\"environment\",\"Value\":\"Test\"},{\"Key\":\"cost-center\",\"Value\":\"Test\"}]}],\"BlockDeviceMappings\":[{\"DeviceName\":\"/dev/sda1\",\"Ebs\":{\"VolumeSize\":16}}]}'" "Specifying HttpProtocol metadata options for an instance is not supported in this region"
+
+log ""
+log "########################"
+log "# 71. Lambda create-function fails due to invalid role ARN"
+log "########################"
+
+validate_expected_error_match "lambda create-function with invalid role ARN" "aws lambda create-function --function-name foo --role foo --vpc-config SubnetIds=\$SUBNET_1,\$SUBNET_2,\$SUBNET_3,SecurityGroupIds=foo" "Member must satisfy regular expression pattern: arn:"
+
+log ""
+log "########################"
+log "# 72. Lambda create-function fails due to missing VPC configuration"
+log "########################"
+
+validate_expected_error_match "lambda create-function with empty vpc-config" "aws lambda create-function --function-name foo --role foo --vpc-config {}" "attempted to create/modify Lambda Function without a VPC Configuration"
+validate_expected_error_match "lambda create-function without vpc-config" "aws lambda create-function --function-name foo --role foo" "attempted to create/modify Lambda Function without a VPC Configuration"
+validate_expected_error_match "lambda update-function-configuration with empty VPC config" "aws lambda update-function-configuration --function-name foo --vpc-config {}" "attempted to create/modify Lambda Function without a VPC Configuration"
+
+log ""
+log "########################"
+log "# 73. Lambda Code Signing Config – create, get, delete"
+log "########################"
+
+validate_rewrite_smart "lambda create-code-signing-config" "aws lambda create-code-signing-config --allowed-publishers SigningProfileVersionArns=arn:aws-iso:iam::663117128738:user/test-combine-endpoints-user" "" ".CodeSigningConfig.CodeSigningConfigArn" "CODE_SIGNING_ARN"
+validate_rewrite_smart "lambda get-code-signing-config" "aws lambda get-code-signing-config --code-signing-config-arn \$CODE_SIGNING_ARN"
+validate_success "lambda delete-code-signing-config" "aws lambda delete-code-signing-config --code-signing-config-arn \$CODE_SIGNING_ARN"
+validate_rewrite_smart "lambda add-permission from S3 arn" "aws lambda add-permission --function-name TfTest --statement-id TestArn --action lambda:InvokeFunction --principal s3.amazonaws.com --source-arn arn:aws-iso:s3:::combine-devops-370881201289"
+validate_rewrite_smart "lambda add-permission from EMR" "aws lambda add-permission --function-name TfTest --statement-id TestServicePrincipal --action lambda:InvokeFunction --principal elasticmapreduce.c2s.ic.gov"
+validate_rewrite_smart "lambda add-permission from EC2 optional" "aws lambda add-permission --function-name TfTest --statement-id TestServicePrincipalOptional --action lambda:InvokeFunction --principal ec2.c2s.ic.gov"
+validate_rewrite_smart "lambda get-policy" "aws lambda get-policy --function-name TfTest"
+validate_rewrite_smart "lambda create-alias" "aws lambda create-alias --function-name arn:aws-iso:lambda:us-iso-east-1:663117128738:function:TfTest --name TestAlias --function-version \$LATEST"
+validate_rewrite_smart "lambda get-alias" "aws lambda get-alias --function-name arn:aws-iso:lambda:us-iso-east-1:663117128738:function:TfTest --name TestAlias"
+validate_success "lambda delete-alias" "aws lambda delete-alias --function-name arn:aws-iso:lambda:us-iso-east-1:663117128738:function:TfTest --name TestAlias"
+validate_rewrite_smart "lambda list-functions ALL" "aws lambda list-functions --function-version ALL"
+validate_rewrite_smart "lambda list-functions master region" "aws lambda list-functions --master-region us-iso-east-1 --function-version ALL"
+
 
