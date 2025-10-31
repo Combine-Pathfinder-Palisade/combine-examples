@@ -203,7 +203,9 @@ validate_rewrite_smart() {
   local region="${3:-}"
   local jq_filter="${4:-}"
   local env_var_name="${5:-}"
-  local pattern="arn:aws-iso(-b)?:|us-iso(-b)?|usie\\d?|usiw\\d?|usib\\d?|c2s.ic.gov|sc2s.sgov.gov|gov\.ic\.c2s\.us-iso-east-1|gov\.sgov\.sc2s\.us-isob-east-1|com\.amazonaws\.us-iso(-b)?-east-1\.s3" #pattern="arn:aws-iso(-b)?:|us-iso(-b)?|usie\\d?|usiw\\d?|usib\\d?|c2s.ic.gov|sc2s.sgov.gov"
+  local exception_pattern="${6:-}"  # Optional: values that should NOT match rewrite regex
+
+  local pattern="arn:aws-iso(-b)?:|us-iso(-b)?|usie\\d?|usiw\\d?|usib\\d?|c2s.ic.gov|sc2s.sgov.gov|gov\.ic\.c2s\.us-iso-east-1|gov\.sgov\.sc2s\.us-isob-east-1|com\.amazonaws\.us-iso(-b)?-east-1\.s3"
 
   printf "🔍 %s%s: " "$label" "${region:+ ($region)}"
 
@@ -219,9 +221,20 @@ validate_rewrite_smart() {
   fi
 
   local matches
-  matches=$(echo "$output" | jq -r '.. | scalars | select(type == "string")' | grep -E "$pattern" 2>/dev/null || true)
+  matches=$(echo "$output" | jq -r '.. | scalars | select(type == "string")' | grep -E "$pattern" || true)
 
   if [[ -n "$matches" ]]; then
+    if [[ -n "$exception_pattern" ]]; then
+      # Case for validating matches EXCEPT X.. I thought about making this its own function but I hate having special functions for just one case.... might revist LRM
+      local bad_matches
+      bad_matches=$(echo "$matches" | grep -E "$exception_pattern" || true)
+      if [[ -n "$bad_matches" ]]; then
+        echo "❌ Failed (unexpected rewrite of exception strings)"
+        echo "$bad_matches" | head -n 10
+        return 1
+      fi
+    fi
+
     echo "✅ Passed"
 
     # Optional variable extraction
@@ -242,7 +255,6 @@ validate_rewrite_smart() {
     return 1
   fi
 }
-
 ###########################################
 ## Validate if the result is blocked     ##
 ###########################################
@@ -1372,3 +1384,19 @@ validate_success "iam delete-policy (us-iso)" "aws iam delete-policy --policy-ar
 validate_rewrite_smart "iam create-policy (us-isob)" "aws iam create-policy --policy-name Test --policy-document '{\"Statement\":[{\"Action\":[\"elasticfilesystem:DescribeMountTargets\",\"elasticfilesystem:ClientWrite\",\"elasticfilesystem:ClientRootAccess\",\"elasticfilesystem:ClientMount\"],\"Effect\":\"Allow\",\"Resource\":\"arn:aws-iso-b:elasticfilesystem:us-isob-east-1:123456789123:file-system/fs-11111111111111111\",\"Sid\":\"AllowRW\"}],\"Version\":\"2012-10-17\"}'" "us-isob-east-1"
 validate_success "iam delete-policy (us-isob)" "aws iam delete-policy --policy-arn arn:aws-iso-b:iam::663117128738:policy/Test" "us-isob-east-1"
 
+log ""
+log "########################"
+log "# 80. IAM policy create/delete with rewritten EFS ARNs"
+log "########################"
+
+validate_rewrite_smart "iam create-role with service principals" "aws iam get-role --role-name CombineTestServicePrincipal" "" ".Role.AssumeRolePolicyDocument.Statement[0].Principal.Service[]" "" "elasticfilesystem.amazonaws.com"
+validate_success "iam delete-role" "aws iam delete-role --role-name CombineTestServicePrincipal"
+
+log ""
+log "########################"
+log "# 81. IAM role creation with rewritten service principals"
+log "########################"
+
+validate_rewrite_smart "iam create-role with rewritten service principals" "aws iam create-role --role-name CombineTestServicePrincipal --assume-role-policy-document '{ \"Version\": \"2012-10-17\", \"Statement\": [ { \"Effect\": \"Allow\", \"Principal\": { \"Service\": [ \"elasticmapreduce.c2s.ic.gov\" ] }, \"Action\": \"sts:AssumeRole\" } ] }'"
+validate_rewrite_smart "iam get-role with rewritten service principals" "aws iam get-role --role-name CombineTestServicePrincipal" "" ".Role.AssumeRolePolicyDocument.Statement[0].Principal.Service[]"
+validate_success "iam delete-role" "aws iam delete-role --role-name CombineTestServicePrincipal"

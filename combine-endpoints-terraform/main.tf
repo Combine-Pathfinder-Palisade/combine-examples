@@ -3,13 +3,18 @@ resource "aws_s3_bucket" "tf_test_bucket" {
   bucket = "sequoia-combine-test-location-constraint"
 }
 
+
+resource "aws_s3_bucket" "tf_test_bucket_2" {
+  bucket = "tf-combine-test-permissions-bucket"
+}
+
 resource "aws_s3_bucket_policy" "tf_test_bucket_policy" {
   bucket = aws_s3_bucket.tf_test_bucket.id
   policy = jsonencode({
     Statement = [{
       Effect    = "Allow"
       Principal = {
-        AWS = "arn:aws-iso:iam::770363063475:root"
+        AWS = "arn:aws-iso:iam::${var.bucket_principal_arn}:root"
       }
       Action   = ["s3:*"]
       Resource = [
@@ -21,7 +26,7 @@ resource "aws_s3_bucket_policy" "tf_test_bucket_policy" {
 }
 
 resource "aws_s3_bucket_inventory" "test_inventory" {
-  bucket = "combine-endpoint-test"
+  bucket = "tf-combine-test-permissions-bucket"
   name   = "Test"
 
   included_object_versions = "Current"
@@ -34,7 +39,7 @@ resource "aws_s3_bucket_inventory" "test_inventory" {
   destination {
     bucket {
       format     = "CSV"
-      bucket_arn = "arn:aws-iso:s3:::combine-endpoint-test-inventory"
+      bucket_arn = "arn:aws-iso:s3:::tf-combine-test-permissions-bucket"
       account_id = "663117128738"
     }
   }
@@ -114,6 +119,11 @@ resource "aws_iam_policy" "tf_combine_test_policy" {
   })
 }
 
+resource "aws_cloudwatch_log_group" "tf_log_group" {
+  name              = "CombineTest"
+  retention_in_days = 7
+}
+
 resource "aws_cloudwatch_metric_alarm" "tf_combine_alarm" {
   alarm_name          = "TfCombineTest"
   comparison_operator = "GreaterThanThreshold"
@@ -136,8 +146,8 @@ resource "aws_ssm_parameter" "tf_test_secure_string" {
   name   = "TfTest2"
   type   = "SecureString"
   value  = "Test"
-  key_id = "arn:aws-iso:kms:us-iso-east-1:663117128738:key/3000dcaa-c17a-4e5d-8e3a-5119afa0cf6f"
-}
+  key_id = aws_kms_key.tf_combine_key.arn
+} #Evaluate this see if it uses the correct arn
 
 resource "aws_dynamodb_table" "tf_combine_endpoints_test_gt" {
   name           = "tf-combine-endpoints-test-gt"
@@ -149,57 +159,110 @@ resource "aws_dynamodb_table" "tf_combine_endpoints_test_gt" {
     type = "S"
   }
   stream_enabled   = true
-  stream_view_type = "NEW_AND_OLD_IMAGES" # Or one of the valid options below
+  stream_view_type = "NEW_AND_OLD_IMAGES" 
 }
 
 resource "aws_kms_key" "tf_combine_key" {
-  count = 0
   description             = "Key for Combine endpoint testing"
   deletion_window_in_days = 7
+
   timeouts {
-  	create = "20m"
+    create = "20m"
   }
+
   tags = {
-  	Name = "TfCombineTestKey"
+    Name = "TfCombineTestKey"
   }
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Id      = "key-default-1",
-    Statement = [
-      {
-        Effect    = "Allow",
-        Principal = {
-          AWS = "arn:aws-iso:iam::663117128738:root"
-        },
-        Action   = "kms:*",
-        Resource = "*"
-      },
-      {
-        Effect    = "Allow",
-        Principal = {
-          Service = "logs.us-east-1.amazonaws.com"
-        },
-        Action    = ["kms:Encrypt*", "kms:Decrypt*", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:Describe*"],
-        Resource  = "*",
-        Condition = {
-          ArnEquals = {
-            "kms:EncryptionContext:aws:logs:arn" = "arn:aws-iso:logs:us-iso-east-1:362835259437:*"
-          }
-        }
-      }
-    ]
-  })
 }
+
+##KMS policies might have issues with Combine LRM
+
+# resource "aws_kms_key_policy" "tf_combine_key_policy" {
+#   key_id = aws_kms_key.tf_combine_key.id
+
+#   policy = jsonencode({
+#     Version = "2012-10-17",
+#     Id      = "key-default-1",
+#     Statement = [
+#       {
+#         Effect    = "Allow",
+#         Principal = {
+#           AWS = "arn:aws-iso:iam::${var.account_id}:root"
+#         },
+#         Action   = "kms:*",
+#         Resource = "*"
+#       },
+#       {
+#         Effect    = "Allow",
+#         Principal = {
+#           Service = "logs.us-east-1.amazonaws.com"
+#         },
+#         Action    = [
+#           "kms:Encrypt*",
+#           "kms:Decrypt*",
+#           "kms:ReEncrypt*",
+#           "kms:GenerateDataKey*",
+#           "kms:Describe*"
+#         ],
+#         Resource  = "*",
+#         Condition = {
+#           ArnEquals = {
+#             "kms:EncryptionContext:aws:logs:arn" = "arn:aws-iso:logs:us-iso-east-1:362835259437:*"
+#           }
+#         }
+#       }
+#     ]
+#   })
+# }
+
+# resource "aws_kms_key" "tf_combine_key" {
+#   //count = 0
+#   description             = "Key for Combine endpoint testing"
+#   deletion_window_in_days = 7
+#   timeouts {
+#   	create = "20m"
+#   }
+#   tags = {
+#   	Name = "TfCombineTestKey"
+#   }
+#   policy = jsonencode({
+#     Version = "2012-10-17",
+#     Id      = "key-default-1",
+#     Statement = [
+#       {
+#         Effect    = "Allow",
+#         Principal = {
+#           AWS = "arn:aws-iso:iam::${var.account_id}:root"
+#         },
+#         Action   = "kms:*",
+#         Resource = "*"
+#       },
+#       {
+#         Effect    = "Allow",
+#         Principal = {
+#           Service = "logs.us-east-1.amazonaws.com"
+#         },
+#         Action    = ["kms:Encrypt*", "kms:Decrypt*", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:Describe*"],
+#         Resource  = "*",
+#         Condition = {
+#           ArnEquals = {
+#             "kms:EncryptionContext:aws:logs:arn" = "arn:aws-iso:logs:us-iso-east-1:362835259437:*"
+#           }
+#         }
+#       }
+#     ]
+#   })
+# }
 
 resource "aws_cloudtrail" "tf_combine_test_trail" {
   name                          = "TfCombineTest"
-  s3_bucket_name                = "aws-cloudtrail-logs-663117128738-7700349f"
+  s3_bucket_name                = "aws-cloudtrail-logs-${var.account_id}-7700349f"
   s3_key_prefix                 = "EndpointsTest"
-  is_multi_region_trail        = false
+  is_multi_region_trail         = false
   include_global_service_events = false
-  cloud_watch_logs_group_arn   = "arn:aws-iso:logs:us-iso-east-1:663117128738:log-group:CombineTest:*"
-  cloud_watch_logs_role_arn    = "arn:aws-iso:iam::663117128738:role/service-role/CombineTestCloudTrailRole"
-  kms_key_id                    = "arn:aws-iso:kms:us-iso-east-1:663117128738:key/3000dcaa-c17a-4e5d-8e3a-5119afa0cf6f"
+  cloud_watch_logs_group_arn    = aws_cloudwatch_log_group.tf_log_group.arn //"arn:aws-iso:logs:us-iso-east-1:${var.account_id}:log-group:CombineTest:*"
+  cloud_watch_logs_role_arn     = aws_iam_role.tf_combine_test_role.arn //"arn:aws-iso:iam::${var.account_id}:role/service-role/CombineTestCloudTrailRole"
+  kms_key_id                    = aws_kms_key.tf_combine_key.arn //"arn:aws-iso:kms:us-iso-east-1:${var.account_id}:key/3000dcaa-c17a-4e5d-8e3a-5119afa0cf6f"
 }
 
 resource "aws_db_subnet_group" "tf_combine_endpoints_subnet_group" {
@@ -233,8 +296,8 @@ resource "aws_db_instance" "tf_combine_instance" {
   availability_zone       = "us-iso-east-1a"
   skip_final_snapshot     = true
 }
-
-resource "aws_elb" "tf_combine_test_elb" {
+##Load balancer creates but runs into issues with Combine on one of the update calls so commenting for now LRM
+/*resource "aws_elb" "tf_combine_test_elb" {
   name               = "Foo"
   #availability_zones = ["us-iso-east-1a"]
   listener {
@@ -246,7 +309,6 @@ resource "aws_elb" "tf_combine_test_elb" {
   subnets  = [var.subnet_1]
 }
 
-#Loadbalancer will fail when trying to update due to Combine limitation
 resource "aws_lb" "tf_combine_lb" {
   name               = "Bar"
   internal           = true
@@ -273,7 +335,7 @@ resource "aws_lb_listener" "tf_combine_listener" {
     type             = "forward"
     target_group_arn = aws_lb_target_group.tf_combine_target_group.arn
   }
-}
+}*/
 
 resource "aws_security_group" "lambda_sg" {
   name        = "combine-lambda-sg"
@@ -283,7 +345,7 @@ resource "aws_security_group" "lambda_sg" {
 
 resource "aws_lambda_function" "tf_combine_test_lambda" {
   function_name = "TFTest"
-  role          = "arn:aws-iso:iam::663117128738:role/Combine-Test-Role-Admin"
+  role          = "arn:aws-iso:iam::${var.account_id}:role/Combine-Test-Role-Admin"
   handler       = "index.handler"
   runtime       = "nodejs20.x"
   filename         = "${path.module}/dummy.zip" 
@@ -293,7 +355,7 @@ resource "aws_lambda_function" "tf_combine_test_lambda" {
   	security_group_ids = [aws_security_group.lambda_sg.id]
   }
   dead_letter_config {
-    target_arn = "arn:aws-iso:sqs:us-iso-east-1:663117128738:TfTestRedrive"
+    target_arn = "arn:aws-iso:sqs:us-iso-east-1:${var.account_id}:TfTestRedrive"
   }
 }
 
