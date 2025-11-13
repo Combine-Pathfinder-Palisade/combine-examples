@@ -203,8 +203,6 @@ validate_rewrite_smart() {
   local region="${3:-}"
   local jq_filter="${4:-}"
   local env_var_name="${5:-}"
-  local exception_pattern="${6:-}"  # Optional: values that should NOT match rewrite regex
-
   local pattern="arn:aws-iso(-b)?:|us-iso(-b)?|usie\\d?|usiw\\d?|usib\\d?|c2s.ic.gov|sc2s.sgov.gov|gov\.ic\.c2s\.us-iso-east-1|gov\.sgov\.sc2s\.us-isob-east-1|com\.amazonaws\.us-iso(-b)?-east-1\.s3"
 
   printf "🔍 %s%s: " "$label" "${region:+ ($region)}"
@@ -224,17 +222,6 @@ validate_rewrite_smart() {
   matches=$(echo "$output" | jq -r '.. | scalars | select(type == "string")' | grep -E "$pattern" || true)
 
   if [[ -n "$matches" ]]; then
-    if [[ -n "$exception_pattern" ]]; then
-      # Case for validating matches EXCEPT X.. I thought about making this its own function but I hate having special functions for just one case.... might revist LRM
-      local bad_matches
-      bad_matches=$(echo "$matches" | grep -E "$exception_pattern" || true)
-      if [[ -n "$bad_matches" ]]; then
-        echo "❌ Failed (unexpected rewrite of exception strings)"
-        echo "$bad_matches" | head -n 10
-        return 1
-      fi
-    fi
-
     echo "✅ Passed"
 
     # Optional variable extraction
@@ -299,6 +286,43 @@ validate_instance_type_absent_grep() {
     echo "$output" | grep "$forbidden"
   else
     echo "✅ Passed (no $forbidden found)"
+  fi
+}
+
+###########################################
+## Validate that value is missing        ##
+###########################################
+
+validate_rewrite_with_exception() {
+  local label="$1"
+  local cmd="$2"
+  local exception_pattern="$3"
+  local pattern="arn:aws-iso(-b)?:|us-iso(-b)?|usie\\d?|usiw\\d?|usib\\d?|c2s.ic.gov|sc2s.sgov.gov|gov\.ic\.c2s\.us-iso-east-1|gov\.sgov\.sc2s\.us-isob-east-1|com\.amazonaws\.us-iso(-b)?-east-1\.s3"
+
+  printf "🔍 %s: " "$label"
+
+  local output
+  output=$(eval "$cmd" 2>/dev/null)
+
+  if [[ -z "$output" || "$output" == "null" ]]; then
+    echo "❌ Failed (empty or invalid response)"
+    return 1
+  fi
+
+  local matches
+  matches=$(echo "$output" | jq -r '.. | scalars | select(type == "string")' | grep -E "$pattern" || true)
+
+  if [[ -n "$matches" ]]; then
+    if echo "$matches" | grep -F "$exception_pattern" > /dev/null; then
+      echo "❌ Failed (unexpected rewrite of exception: $exception_pattern)"
+      echo "$matches" | grep -F "$exception_pattern" | head -n 10
+      return 1
+    fi
+    echo "✅ Passed"
+  else
+    echo "❌ Failed (no rewritten strings found)"
+    echo "$output" | jq . | head -n 20
+    return 1
   fi
 }
 

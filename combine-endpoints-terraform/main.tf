@@ -8,6 +8,10 @@ resource "aws_s3_bucket" "tf_test_bucket_2" {
   bucket = "tf-combine-test-permissions-bucket"
 }
 
+resource "aws_s3_bucket" "tf_cloudtrail_bucket" {
+  bucket = "tf-cloudtrail-logs-${var.account_id}"
+}
+
 resource "aws_s3_bucket_policy" "tf_test_bucket_policy" {
   bucket = aws_s3_bucket.tf_test_bucket.id
   policy = jsonencode({
@@ -22,6 +26,48 @@ resource "aws_s3_bucket_policy" "tf_test_bucket_policy" {
         "arn:aws-iso:s3:::${aws_s3_bucket.tf_test_bucket.id}/*"
       ]
     }]
+  })
+}
+
+resource "aws_s3_bucket_policy" "tf_cloudtrail_bucket_policy" {
+  bucket = aws_s3_bucket.tf_cloudtrail_bucket.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid = "AWSCloudTrailAclCheck",
+        Effect = "Allow",
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        },
+        Action = "s3:GetBucketAcl",
+        Resource = "arn:aws-iso:s3:::${aws_s3_bucket.tf_cloudtrail_bucket.id}"
+      },
+      {
+        Sid = "AWSCloudTrailWrite",
+        Effect = "Allow",
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        },
+        Action = "s3:PutObject",
+        Resource = "arn:aws-iso:s3:::${aws_s3_bucket.tf_cloudtrail_bucket.id}/EndpointsTest/AWSLogs/${var.account_id}/*",
+        Condition = {
+          StringEquals = {
+            "s3:x-amz-acl" = "bucket-owner-full-control"
+          }
+        }
+      },
+      {
+        Sid = "AWSCloudTrailGetBucketLocation",
+        Effect = "Allow",
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        },
+        Action = "s3:GetBucketLocation",
+        Resource = "arn:aws-iso:s3:::${aws_s3_bucket.tf_cloudtrail_bucket.id}"
+      }
+    ]
   })
 }
 
@@ -40,7 +86,7 @@ resource "aws_s3_bucket_inventory" "test_inventory" {
     bucket {
       format     = "CSV"
       bucket_arn = "arn:aws-iso:s3:::tf-combine-test-permissions-bucket"
-      account_id = "663117128738"
+      account_id = var.account_id
     }
   }
 }
@@ -78,15 +124,92 @@ resource "aws_sns_topic_subscription" "tf_test2_subscription" {
 
 resource "aws_iam_role" "tf_combine_test_role" {
   name = "TfCombineTest"
+
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = {
-        Service = "ec2.amazonaws.com"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = [
+            "ec2.amazonaws.com",
+            "lambda.amazonaws.com",
+            "cloudtrail.amazonaws.com"
+          ]
+        }
+        Action = "sts:AssumeRole"
       }
-      Action = "sts:AssumeRole"
-    }]
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "allow_cloudtrail_logs" {
+  name = "AllowCloudTrailLogs"
+  role = aws_iam_role.tf_combine_test_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ],
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "allow_ec2_actions" {
+  name = "AllowEc2Actions"
+  role = aws_iam_role.tf_combine_test_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "ec2:CreateNetworkInterface",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DeleteNetworkInterface"
+        ],
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "allow_sqs_send" {
+  name = "AllowSQSSend"
+  role = aws_iam_role.tf_combine_test_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:SendMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        Resource = [
+          aws_sqs_queue.tf_test_queue.arn,
+          aws_sqs_queue.tf_test_redrive.arn
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "*"
+      }
+    ]
   })
 }
 
@@ -120,7 +243,7 @@ resource "aws_iam_policy" "tf_combine_test_policy" {
 }
 
 resource "aws_cloudwatch_log_group" "tf_log_group" {
-  name              = "CombineTest"
+  name              = "TF_CombineTest"
   retention_in_days = 7
 }
 
@@ -134,9 +257,9 @@ resource "aws_cloudwatch_metric_alarm" "tf_combine_alarm" {
   statistic           = "Average"
   threshold           = 70
   alarm_description   = "Test alarm"
-  alarm_actions       = ["arn:aws-iso:sns:us-iso-east-1:663117128738:TfCombineEndpointsTest"]
-  ok_actions          = ["arn:aws-iso:sns:us-iso-east-1:663117128738:TfCombineEndpointsTest"]
-  insufficient_data_actions = ["arn:aws-iso:sns:us-iso-east-1:663117128738:TfCombineEndpointsTest"]
+  alarm_actions       = [aws_sns_topic.tf_test2_topic.arn]
+  ok_actions          = [aws_sns_topic.tf_test2_topic.arn]
+  insufficient_data_actions = [aws_sns_topic.tf_test2_topic.arn]
   dimensions = {
     InstanceId = "i-12345678912"
   }
@@ -175,92 +298,51 @@ resource "aws_kms_key" "tf_combine_key" {
   }
 }
 
-##KMS policies might have issues with Combine LRM
+## Commented because it seems terraform tries to check if the policy returned is the same policy sent and it seems that we're returning something different or slightly different so it stalls TF LRM
 
-# resource "aws_kms_key_policy" "tf_combine_key_policy" {
-#   key_id = aws_kms_key.tf_combine_key.id
+resource "aws_kms_key_policy" "tf_combine_key_policy" {
+  key_id = aws_kms_key.tf_combine_key.id
 
-#   policy = jsonencode({
-#     Version = "2012-10-17",
-#     Id      = "key-default-1",
-#     Statement = [
-#       {
-#         Effect    = "Allow",
-#         Principal = {
-#           AWS = "arn:aws-iso:iam::${var.account_id}:root"
-#         },
-#         Action   = "kms:*",
-#         Resource = "*"
-#       },
-#       {
-#         Effect    = "Allow",
-#         Principal = {
-#           Service = "logs.us-east-1.amazonaws.com"
-#         },
-#         Action    = [
-#           "kms:Encrypt*",
-#           "kms:Decrypt*",
-#           "kms:ReEncrypt*",
-#           "kms:GenerateDataKey*",
-#           "kms:Describe*"
-#         ],
-#         Resource  = "*",
-#         Condition = {
-#           ArnEquals = {
-#             "kms:EncryptionContext:aws:logs:arn" = "arn:aws-iso:logs:us-iso-east-1:362835259437:*"
-#           }
-#         }
-#       }
-#     ]
-#   })
-# }
-
-# resource "aws_kms_key" "tf_combine_key" {
-#   //count = 0
-#   description             = "Key for Combine endpoint testing"
-#   deletion_window_in_days = 7
-#   timeouts {
-#   	create = "20m"
-#   }
-#   tags = {
-#   	Name = "TfCombineTestKey"
-#   }
-#   policy = jsonencode({
-#     Version = "2012-10-17",
-#     Id      = "key-default-1",
-#     Statement = [
-#       {
-#         Effect    = "Allow",
-#         Principal = {
-#           AWS = "arn:aws-iso:iam::${var.account_id}:root"
-#         },
-#         Action   = "kms:*",
-#         Resource = "*"
-#       },
-#       {
-#         Effect    = "Allow",
-#         Principal = {
-#           Service = "logs.us-east-1.amazonaws.com"
-#         },
-#         Action    = ["kms:Encrypt*", "kms:Decrypt*", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:Describe*"],
-#         Resource  = "*",
-#         Condition = {
-#           ArnEquals = {
-#             "kms:EncryptionContext:aws:logs:arn" = "arn:aws-iso:logs:us-iso-east-1:362835259437:*"
-#           }
-#         }
-#       }
-#     ]
-#   })
-# }
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid = "Enable IAM User Permissions",
+        Effect = "Allow",
+        Principal = {
+          AWS = "arn:aws-iso:iam::${var.account_id}:root"
+        },
+        Action = "kms:*",
+        Resource = "*"
+      },
+      {
+        Sid = "Allow CloudTrail Use of the Key",
+        Effect = "Allow",
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        },
+        Action = [
+          "kms:GenerateDataKey*",
+          "kms:Encrypt"
+        ],
+        Resource = "*",
+        Condition = {
+          StringEquals = {
+            "kms:EncryptionContext:aws:cloudtrail:arn" = "arn:aws-iso:cloudtrail:us-iso-east-1:${var.account_id}:trail/TfCombineTest"
+          }
+        }
+      }
+    ]
+  })
+}
 
 resource "aws_cloudtrail" "tf_combine_test_trail" {
   name                          = "TfCombineTest"
-  s3_bucket_name                = "aws-cloudtrail-logs-${var.account_id}-7700349f"
+  s3_bucket_name                = aws_s3_bucket.tf_cloudtrail_bucket.bucket
   s3_key_prefix                 = "EndpointsTest"
   is_multi_region_trail         = false
   include_global_service_events = false
-  cloud_watch_logs_group_arn    = aws_cloudwatch_log_group.tf_log_group.arn //"arn:aws-iso:logs:us-iso-east-1:${var.account_id}:log-group:CombineTest:*"
+  cloud_watch_logs_group_arn    = "arn:aws-iso:logs:us-iso-east-1:${var.account_id}:log-group:TF_CombineTest:*"//aws_cloudwatch_log_group.tf_log_group.arn //"arn:aws-iso:logs:us-iso-east-1:${var.account_id}:log-group:CombineTest:*"
   cloud_watch_logs_role_arn     = aws_iam_role.tf_combine_test_role.arn //"arn:aws-iso:iam::${var.account_id}:role/service-role/CombineTestCloudTrailRole"
   kms_key_id                    = aws_kms_key.tf_combine_key.arn //"arn:aws-iso:kms:us-iso-east-1:${var.account_id}:key/3000dcaa-c17a-4e5d-8e3a-5119afa0cf6f"
 }
@@ -345,7 +427,7 @@ resource "aws_security_group" "lambda_sg" {
 
 resource "aws_lambda_function" "tf_combine_test_lambda" {
   function_name = "TFTest"
-  role          = "arn:aws-iso:iam::${var.account_id}:role/Combine-Test-Role-Admin"
+  role          = aws_iam_role.tf_combine_test_role.arn
   handler       = "index.handler"
   runtime       = "nodejs20.x"
   filename         = "${path.module}/dummy.zip" 
@@ -355,7 +437,7 @@ resource "aws_lambda_function" "tf_combine_test_lambda" {
   	security_group_ids = [aws_security_group.lambda_sg.id]
   }
   dead_letter_config {
-    target_arn = "arn:aws-iso:sqs:us-iso-east-1:${var.account_id}:TfTestRedrive"
+    target_arn = aws_sqs_queue.tf_test_redrive.arn
   }
 }
 
@@ -364,7 +446,7 @@ resource "aws_lambda_permission" "tf_combine_test_lambda_permission_s3" {
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.tf_combine_test_lambda.function_name
   principal     = "s3.amazonaws.com"
-  source_arn    = "arn:aws-iso:s3:::combine-devops-370881201289"
+  source_arn    =  aws_s3_bucket.tf_test_bucket_2.arn ##"arn:aws-iso:s3:::combine-devops-370881201289"
 }
 
 resource "aws_lambda_permission" "tf_combine_test_lambda_permission_emr" {
