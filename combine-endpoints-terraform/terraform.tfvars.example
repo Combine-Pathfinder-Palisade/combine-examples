@@ -1,6 +1,0 @@
-region           = "us-iso-east-1"
-access_key       = "REPLACE_ME"
-secret_key       = "REPLACE_ME"
-custom_ca_bundle = "./combine-ca-chain.cert.pem"
-s3_endpoint      = "https://s3.us-iso-east-1.c2s.ic.gov"
-sqs_endpoint     = "https://sqs.us-iso-east-1.c2s.ic.gov"

@@ -1,4 +1,18 @@
 #!/bin/bash
+
+#############################
+# validate_tests.sh
+#
+# This script creates and destroys resources in a Combine environment, serving
+# as an end-to-end test suite for Combine emulation.
+#
+# This is a counterpart to the terraform test suite, and is necessary beacuse
+# terraform and the CLI often request different default parameters and return
+# formats.
+#
+# Note that this script is incomplete and a work in progress.
+#############################
+
 set -uo pipefail
 
 LOGFILE="validate_results.log"
@@ -10,7 +24,7 @@ function log() {
 
 #############################
 # GET VPC ID need a better way to do this..
-# Maybe we can have some sort of external file with the variables? 
+# Maybe we can have some sort of external file with the variables?
 # Something we only edit once and then I can reference in some way that doesn't require multiple changes
 #############################
 
@@ -250,7 +264,7 @@ validate_expected_error_match() {
   local label="$1"
   local command="$2"
   local expected_message="$3"
-  local fallback_message="${4:-}"  
+  local fallback_message="${4:-}"
 
   printf "🚫 %s: " "$label"
 
@@ -347,7 +361,7 @@ validate_rewrite_with_exception() {
 #}
 
 
-## this function is used when we need to check if the call passed and it returns a result that doesnt need to be rewritten 
+## this function is used when we need to check if the call passed and it returns a result that doesnt need to be rewritten
 ###########################################
 ## Validate if no error                  ##
 ###########################################
@@ -559,7 +573,7 @@ validate_expected_error_match "sns get-data-protection-policy" "aws sns get-data
 validate_expected_error_match "stepfunctions test-state" "aws stepfunctions test-state --definition {} --role-arn foo" "Combine rejected this AWS API"
 validate_expected_error_match "transcribe list-medical-vocabularies" "aws transcribe list-medical-vocabularies" "Combine rejected this AWS API"
 validate_expected_error_match "workspaces create-updated-workspace-image" "aws workspaces create-updated-workspace-image --name foo --description foo --source-image-id foo --region us-isob-east-1" "Combine rejected this AWS API"
- 
+
 log ""
 log "########################"
 log "# 4. Should return 501 Not Implemented (Unsupported services - implicitly denied)"
@@ -850,7 +864,7 @@ validate_rewrite_smart "glacier get-vault-notifications" "aws glacier get-vault-
 validate_success "glacier delete-vault-notifications" "aws glacier delete-vault-notifications --account-id 663117128738 --vault-name CombineTest"
 validate_success "glacier set-vault-access-policy" "aws glacier set-vault-access-policy --account-id 663117128738 --vault-name CombineTest --policy '{\"Policy\":\"{\\\"Version\\\": \\\"2012-10-17\\\",\\\"Statement\\\": [{\\\"Sid\\\": \\\"CombineTest\\\",\\\"Effect\\\": \\\"Allow\\\",\\\"Principal\\\": {\\\"AWS\\\": \\\"arn:aws-iso:iam::663117128738:root\\\"},\\\"Action\\\": \\\"glacier:*\\\",\\\"Resource\\\": \\\"arn:aws-iso:glacier:us-iso-east-1:663117128738:vaults/CombineTest\\\"}]}\"}'"
 validate_rewrite_smart "glacier get-vault-access-policy" "aws glacier get-vault-access-policy --account-id 663117128738 --vault-name CombineTest" ""
-validate_success "glacier delete-vault-access-policy" "aws glacier delete-vault-access-policy --account-id 663117128738 --vault-name CombineTest" 
+validate_success "glacier delete-vault-access-policy" "aws glacier delete-vault-access-policy --account-id 663117128738 --vault-name CombineTest"
 validate_success "glacier initiate-vault-lock" "aws glacier initiate-vault-lock --account-id 663117128738 --vault-name CombineTest --policy '{\"Policy\":\"{\\\"Version\\\":\\\"2012-10-17\\\",\\\"Statement\\\":[{\\\"Sid\\\":\\\"CombineTest\\\",\\\"Principal\\\":\\\"*\\\",\\\"Effect\\\":\\\"Deny\\\",\\\"Action\\\":\\\"glacier:DeleteArchive\\\",\\\"Resource\\\":[\\\"arn:aws-iso:glacier:us-iso-east-1:663117128738:vaults/CombineTest\\\"],\\\"Condition\\\":{\\\"NumericLessThan\\\":{\\\"glacier:ArchiveAgeInDays\\\":\\\"7\\\"}}}]}\"}'"
 validate_success "glacier get-vault-lock" "aws glacier get-vault-lock --account-id 663117128738 --vault-name CombineTest"
 validate_success "glacier abort-vault-lock" "aws glacier abort-vault-lock --account-id 663117128738 --vault-name CombineTest"
@@ -863,7 +877,7 @@ log "########################"
 validate_rewrite_smart "stepfunctions create-activity" "aws stepfunctions create-activity --name Foo" ""
 validate_rewrite_smart "stepfunctions list-activities (first pass)" "aws stepfunctions list-activities" ""
 validate_rewrite_smart "stepfunctions describe-activity" "aws stepfunctions describe-activity --activity-arn arn:aws-iso:states:us-iso-east-1:663117128738:activity:Foo" ""
-validate_success "stepfunctions delete-activity" "aws stepfunctions delete-activity --activity-arn arn:aws-iso:states:us-iso-east-1:663117128738:activity:Foo" 
+validate_success "stepfunctions delete-activity" "aws stepfunctions delete-activity --activity-arn arn:aws-iso:states:us-iso-east-1:663117128738:activity:Foo"
 validate_success "stepfunctions list-activities (after delete)" "aws stepfunctions list-activities"
 
 log ""
@@ -1170,7 +1184,7 @@ validate_rewrite_smart "kms encrypt (file input)" "aws kms encrypt --key-id \$KE
 validate_success "kms encrypt + save output to file" "aws kms encrypt --key-id \$KEY_ID --plaintext fileb://test.encrypt --output text --query CiphertextBlob | base64 --decode > test.decrypt"
 validate_success "kms decrypt + save output to file" "aws kms decrypt --key-id \$KEY_ID --ciphertext-blob fileb://test.decrypt --output text --query Plaintext | base64 --decode > test.unencrypted"
 
-# Check that decrypted output matches original input LRM maybe circle back to this.. I hate having specific checks.. 
+# Check that decrypted output matches original input LRM maybe circle back to this.. I hate having specific checks..
 if cmp -s test.encrypt test.unencrypted; then
   echo "✅ KMS encrypt/decrypt roundtrip succeeded (files match)"
 else
