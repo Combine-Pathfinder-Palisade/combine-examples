@@ -5,10 +5,10 @@ set -euo pipefail
 CA_DEST="/etc/pki/ca-trust/source/anchors/combine-ca-chain.pem"
 ENV_SCRIPT="/etc/profile.d/combine-env.sh"
 LOG_PREFIX="[combine-emr-bootstrap]"
+# Change region as needed:
 HOST_REGION="us-east-1"
 EMULATED_REGION="us-iso-east-1"
 
-# These are set from bootstrap action arguments in main()
 SHARD_ID=""
 ACCOUNT_ID=""
 
