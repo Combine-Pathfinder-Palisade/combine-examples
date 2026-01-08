@@ -171,8 +171,9 @@ Save the settings.
 Use this path to follow best practice for secrets management (rotation, RBAC, auditing):
 
 1) **Create the Key Vault**
-   - **Access configuration:** Azure role-based access control (Azure RBAC)
-   - **Networking:** allow per your org policy
+   - In **Resource Group**, select your resource group.
+   - In **Key vault name**, type a name that consists of only letters and numbers.
+   - In **Region**, set it to the same location as the resource group.
 
 2) **Create the secret**
    - **Secret name:** your choice
@@ -208,4 +209,3 @@ Use this path to follow best practice for secrets management (rotation, RBAC, au
 ## Step 8: Deploy the application
 - Web App → **Deployment** → **Deployment Center**
 - Deploy your app as `target/ROOT.war`
-
