@@ -9,6 +9,7 @@ This guide walks you through provisioning the **Azure resources** required to de
 > - Azure Storage (Blob)
 > - (Optional) Azure Key Vault for secrets
 
+![alt text](images/calendar-app.png)
 ## Table of contents
 - [What you will provision](#what-you-will-provision)
 - [Step 1: Create the Web App](#step-1-create-the-web-app)
