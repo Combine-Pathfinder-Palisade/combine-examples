@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://www.eclipse.org/jetty/configure_10_0.dtd">
+<Configure id='wac' class="org.eclipse.jetty.webapp.WebAppContext">
+  <New id="sqlserverds" class="org.eclipse.jetty.plus.jndi.Resource">
+    <Arg></Arg>
+    <Arg>jdbc/SQLSERVERDS</Arg>
+    <Arg>
+      <New class="org.apache.commons.dbcp2.BasicDataSource">
+        <Set name="driverClassName">com.microsoft.sqlserver.jdbc.SQLServerDriver</Set>
+        <Set name="url"><Env name="SQLSERVER_URL"/></Set>
+        <Set name="username"><Env name="SQLSERVER_USER"/></Set>
+        <Set name="password"><Env name="SQLSERVER_PASSWORD"/></Set>
+      </New>
+    </Arg>
+  </New>
+</Configure>
