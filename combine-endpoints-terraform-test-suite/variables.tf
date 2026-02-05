@@ -37,11 +37,6 @@ variable "vpc_id" {
   default     = "placeholder-vpcid"
 }
 
-variable "bucket_principal_arn" {
-  description = "Principal Id for bucket policy"
-  default     = "placeholder-principal-id"
-}
-
 variable "account_id" {
   description = "AWS account ID"
   type        = string

@@ -18,7 +18,7 @@ resource "aws_s3_bucket_policy" "tf_test_bucket_policy" {
     Statement = [{
       Effect = "Allow"
       Principal = {
-        AWS = "arn:aws-iso:iam::${var.bucket_principal_arn}:root"
+        AWS = "arn:aws-iso:iam::${var.account_id}:root"
       }
       Action = ["s3:*"]
       Resource = [
