@@ -10,6 +10,7 @@ resource "aws_s3_bucket" "tf_test_bucket_2" {
 
 resource "aws_s3_bucket" "tf_cloudtrail_bucket" {
   bucket = "tf-cloudtrail-logs-${var.account_id}"
+  force_destroy = true
 }
 
 resource "aws_s3_bucket_policy" "tf_test_bucket_policy" {
@@ -260,9 +261,6 @@ resource "aws_cloudwatch_metric_alarm" "tf_combine_alarm" {
   alarm_actions             = [aws_sns_topic.tf_test2_topic.arn]
   ok_actions                = [aws_sns_topic.tf_test2_topic.arn]
   insufficient_data_actions = [aws_sns_topic.tf_test2_topic.arn]
-  dimensions = {
-    InstanceId = "i-12345678912"
-  }
 }
 
 resource "aws_ssm_parameter" "tf_test_secure_string" {
