@@ -368,7 +368,7 @@ resource "aws_db_instance" "tf_combine_instance" {
   identifier           = "tf-combine-endpoint-test-instance"
   instance_class       = "db.t3.micro"
   engine               = "mysql"
-  engine_version       = "8.0.37" #seems engine needs to be specified in terraform or it will send a request with empty version
+  engine_version       = "8.0" #seems engine needs to be specified in terraform or it will send a request with empty version
   allocated_storage    = 8
   username             = "combineadmin"
   password             = "Combine1275317"
