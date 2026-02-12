@@ -92,7 +92,7 @@ resource "aws_s3_bucket_inventory" "test_inventory" {
   }
 }
 
-resource "aws_s3_bucket" "tF_test_bucket_west" {
+resource "aws_s3_bucket" "tf_test_bucket_west" {
   provider = aws.west
   bucket   = "sequoia-combine-test-location-constraint-usiw1"
 }
