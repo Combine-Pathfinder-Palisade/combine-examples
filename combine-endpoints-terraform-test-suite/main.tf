@@ -1,3 +1,31 @@
+data "aws_partition" "current" {}
+data "aws_region" "current" {}
+
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+data "aws_subnets" "combine_az" {
+  filter {
+    name   = "vpc-id"
+    values = [var.vpc_id]
+  }
+
+  filter {
+    name   = "tag:Name"
+    values = ["Combine-AZ*"]
+  }
+}
+
+locals {
+  all_azs = data.aws_availability_zones.available.names
+  azs_one = local.all_azs[0]
+  azs_three = slice(local.all_azs, 0, 3)
+
+  combine_subnet_ids_all   = sort(data.aws_subnets.combine_az.ids)
+  combine_subnet_ids_three = slice(local.combine_subnet_ids_all, 0, 3)
+ 
+}
 
 resource "aws_s3_bucket" "tf_test_bucket" {
   bucket = "sequoia-combine-test-location-constraint"
@@ -19,12 +47,12 @@ resource "aws_s3_bucket_policy" "tf_test_bucket_policy" {
     Statement = [{
       Effect = "Allow"
       Principal = {
-        AWS = "arn:aws-iso:iam::${var.account_id}:root"
+        AWS = "arn:${data.aws_partition.current.partition}:iam::${var.account_id}:root"
       }
       Action = ["s3:*"]
       Resource = [
-        "arn:aws-iso:s3:::${aws_s3_bucket.tf_test_bucket.id}",
-        "arn:aws-iso:s3:::${aws_s3_bucket.tf_test_bucket.id}/*"
+        "arn:${data.aws_partition.current.partition}:s3:::${aws_s3_bucket.tf_test_bucket.id}",
+        "arn:${data.aws_partition.current.partition}:s3:::${aws_s3_bucket.tf_test_bucket.id}/*"
       ]
     }]
   })
@@ -43,7 +71,7 @@ resource "aws_s3_bucket_policy" "tf_cloudtrail_bucket_policy" {
           Service = "cloudtrail.amazonaws.com"
         },
         Action   = "s3:GetBucketAcl",
-        Resource = "arn:aws-iso:s3:::${aws_s3_bucket.tf_cloudtrail_bucket.id}"
+        Resource = "arn:${data.aws_partition.current.partition}:s3:::${aws_s3_bucket.tf_cloudtrail_bucket.id}"
       },
       {
         Sid    = "AWSCloudTrailWrite",
@@ -52,7 +80,7 @@ resource "aws_s3_bucket_policy" "tf_cloudtrail_bucket_policy" {
           Service = "cloudtrail.amazonaws.com"
         },
         Action   = "s3:PutObject",
-        Resource = "arn:aws-iso:s3:::${aws_s3_bucket.tf_cloudtrail_bucket.id}/EndpointsTest/AWSLogs/${var.account_id}/*",
+        Resource = "arn:${data.aws_partition.current.partition}:s3:::${aws_s3_bucket.tf_cloudtrail_bucket.id}/EndpointsTest/AWSLogs/${var.account_id}/*",
         Condition = {
           StringEquals = {
             "s3:x-amz-acl" = "bucket-owner-full-control"
@@ -66,7 +94,7 @@ resource "aws_s3_bucket_policy" "tf_cloudtrail_bucket_policy" {
           Service = "cloudtrail.amazonaws.com"
         },
         Action   = "s3:GetBucketLocation",
-        Resource = "arn:aws-iso:s3:::${aws_s3_bucket.tf_cloudtrail_bucket.id}"
+        Resource = "arn:${data.aws_partition.current.partition}:s3:::${aws_s3_bucket.tf_cloudtrail_bucket.id}"
       }
     ]
   })
@@ -86,7 +114,7 @@ resource "aws_s3_bucket_inventory" "test_inventory" {
   destination {
     bucket {
       format     = "CSV"
-      bucket_arn = "arn:aws-iso:s3:::tf-combine-test-permissions-bucket"
+      bucket_arn = "arn:${data.aws_partition.current.partition}:s3:::tf-combine-test-permissions-bucket"
       account_id = var.account_id
     }
   }
@@ -308,7 +336,7 @@ resource "aws_kms_key_policy" "tf_combine_key_policy" {
         Sid    = "Enable IAM User Permissions",
         Effect = "Allow",
         Principal = {
-          AWS = "arn:aws-iso:iam::${var.account_id}:root"
+          AWS = "arn:${data.aws_partition.current.partition}:iam::${var.account_id}:root"
         },
         Action   = "kms:*",
         Resource = "*"
@@ -326,7 +354,7 @@ resource "aws_kms_key_policy" "tf_combine_key_policy" {
         Resource = "*",
         Condition = {
           StringEquals = {
-            "kms:EncryptionContext:aws:cloudtrail:arn" = "arn:aws-iso:cloudtrail:us-iso-east-1:${var.account_id}:trail/TfCombineTest"
+            "kms:EncryptionContext:aws:cloudtrail:arn" = "arn:${data.aws_partition.current.partition}:cloudtrail:${data.aws_region.current.name}:${var.account_id}:trail/TfCombineTest"
           }
         }
       }
@@ -340,18 +368,14 @@ resource "aws_cloudtrail" "tf_combine_test_trail" {
   s3_key_prefix                 = "EndpointsTest"
   is_multi_region_trail         = false
   include_global_service_events = false
-  cloud_watch_logs_group_arn    = "arn:aws-iso:logs:us-iso-east-1:${var.account_id}:log-group:TF_CombineTest:*" //aws_cloudwatch_log_group.tf_log_group.arn //"arn:aws-iso:logs:us-iso-east-1:${var.account_id}:log-group:CombineTest:*"
+  cloud_watch_logs_group_arn    = "arn:${data.aws_partition.current.partition}:logs:${data.aws_region.current.name}:${var.account_id}:log-group:TF_CombineTest:*" //aws_cloudwatch_log_group.tf_log_group.arn //"arn:aws-iso:logs:us-iso-east-1:${var.account_id}:log-group:CombineTest:*"
   cloud_watch_logs_role_arn     = aws_iam_role.tf_combine_test_role.arn                                         //"arn:aws-iso:iam::${var.account_id}:role/service-role/CombineTestCloudTrailRole"
   kms_key_id                    = aws_kms_key.tf_combine_key.arn                                                //"arn:aws-iso:kms:us-iso-east-1:${var.account_id}:key/3000dcaa-c17a-4e5d-8e3a-5119afa0cf6f"
 }
 
 resource "aws_db_subnet_group" "tf_combine_endpoints_subnet_group" {
   name = "tf-combine-endpoints-test-subnet-group"
-  subnet_ids = [
-    var.subnet_1,
-    var.subnet_2,
-    var.subnet_3
-  ]
+  subnet_ids = local.combine_subnet_ids_three
 }
 
 resource "aws_rds_cluster" "tf_combine_cluster" {
@@ -360,7 +384,7 @@ resource "aws_rds_cluster" "tf_combine_cluster" {
   master_username      = "combineadmin"
   master_password      = "Combine1275317"
   db_subnet_group_name = aws_db_subnet_group.tf_combine_endpoints_subnet_group.name
-  availability_zones   = ["us-iso-east-1a", "us-iso-east-1b", "us-iso-east-1c"]
+  availability_zones   = local.azs_three //["us-iso-east-1a", "us-iso-east-1b", "us-iso-east-1c"]
   skip_final_snapshot  = true
 }
 
@@ -368,33 +392,33 @@ resource "aws_db_instance" "tf_combine_instance" {
   identifier           = "tf-combine-endpoint-test-instance"
   instance_class       = "db.t3.micro"
   engine               = "mysql"
-  engine_version       = "8.0" #seems engine needs to be specified in terraform or it will send a request with empty version
+  engine_version       = "8.0.40" #seems engine needs to be specified in terraform or it will send a request with empty version
   allocated_storage    = 8
   username             = "combineadmin"
   password             = "Combine1275317"
   db_subnet_group_name = aws_db_subnet_group.tf_combine_endpoints_subnet_group.name
-  availability_zone    = "us-iso-east-1a"
+  availability_zone    = local.azs_one
   skip_final_snapshot  = true
 }
 
 ##Load balancer creates but runs into issues with Combine on one of the update calls so commenting for now LRM
 /*resource "aws_elb" "tf_combine_test_elb" {
   name               = "Foo"
-  #availability_zones = ["us-iso-east-1a"]
+  #availability_zones = local.azs_one
   listener {
     instance_port     = 8080
     instance_protocol = "HTTP"
     lb_port           = 80
     lb_protocol       = "HTTP"
   }
-  subnets  = [var.subnet_1]
+  subnets  = [local.combine_subnet_ids_all[0]]
 }
 
 resource "aws_lb" "tf_combine_lb" {
   name               = "Bar"
   internal           = true
   load_balancer_type = "application"
-  subnets            = [var.subnet_1, var.subnet_2, var.subnet_3]
+  subnets            = local.combine_subnet_ids_three
   enable_deletion_protection = false
   lifecycle {
     ignore_changes = all
@@ -432,7 +456,7 @@ resource "aws_lambda_function" "tf_combine_test_lambda" {
   filename         = "${path.module}/dummy.zip"
   source_code_hash = filebase64sha256("${path.module}/dummy.zip")
   vpc_config {
-    subnet_ids         = [var.subnet_1]
+    subnet_ids         = [local.combine_subnet_ids_all[0]]
     security_group_ids = [aws_security_group.lambda_sg.id]
   }
   dead_letter_config {
@@ -445,7 +469,7 @@ resource "aws_lambda_permission" "tf_combine_test_lambda_permission_s3" {
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.tf_combine_test_lambda.function_name
   principal     = "s3.amazonaws.com"
-  source_arn    = aws_s3_bucket.tf_test_bucket_2.arn ##"arn:aws-iso:s3:::combine-devops-370881201289"
+  source_arn    = aws_s3_bucket.tf_test_bucket_2.arn
 }
 
 resource "aws_lambda_permission" "tf_combine_test_lambda_permission_emr" {
@@ -466,4 +490,21 @@ resource "aws_kinesis_stream" "combine_test" {
   name             = "TfCombineTest"
   shard_count      = 1
   retention_period = 24
+}
+resource "aws_eip" "dummy" {
+  domain = "vpc"   # required in newer provider versions
+
+  tags = {
+    Name = "dummy-eip-to-trigger-error"
+  }
+}
+resource "aws_eip" "bastion" {
+  count  = 1
+  domain = "vpc"
+
+  tags = {
+    Name        = "tf-fake-bastion-01"
+    Environment = "test"
+    Project     = "combine-lab"
+  }
 }
