@@ -29,7 +29,7 @@ Before provisioning, you'll need to replace some values in the `env.hcl` in your
 
 Publicly-available Plugin images should be cached in your own ECR. This includes the `aws_loadbalancer_controller_image` and the `ebs_csi_driver_image`.
 
-We are currently using another role in tandem with `WLDEVELOPER` that emulates a third-party customer team, named `WLCUSTOMERIT`, that is responsible for creating OIDC providers. Here are the steps to create this role:
+We are currently using another role in tandem with `WLDEVELOPER` that emulates a third-party customer team, named `WLCUSTOMERIT`, that is responsible for creating OIDC providers. The WLCUSTOMERIT role is already available in Combine for use. <!-- Here are the steps to create this role:
 - in IAM, create a role named `Combine-YourName-TS-WLCUSTOMERIT` with the following permissions:
 
 ```
@@ -68,11 +68,11 @@ and the following trust policy:
     ]
 }
 ```
-- Then, map it to the WLCUSTOMERIT-C2S role via the Combine Tap Dashboard like so: 
+- Then, map it to the WLCUSTOMERIT-C2S role via the Combine Tap Dashboard like so:  
 
 ![Create the role](readme-images/CreateWLCUSTOMERITRole.png)
 
-- Ensure that the Role name and label are as they are in the above screenshot, save the 'Daniel' in the role name should be replaced with your own name.
+- Ensure that the Role name and label are as they are in the above screenshot, save the 'Daniel' in the role name should be replaced with your own name. -->
 
 You'll then need to associate your user with the `WLCUSTOMERIT-C2S` and the `WLDEVELOPER-C2S` roles via the Combine TAP Dashboard, like so (shown here for the Admin user):
 ![Apply the roles](readme-images/ApplyRolesToUser.png)
