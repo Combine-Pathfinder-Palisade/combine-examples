@@ -8,6 +8,6 @@ metadata:
 spec:
   containers:
   - name: pf-nginx
-    image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/combine-eks/nginx:1.27.0
+    image: 663117128738.dkr.ecr.us-east-1.amazonaws.com/combine-eks/nginx:1.27.0
     ports:
     - containerPort: 80

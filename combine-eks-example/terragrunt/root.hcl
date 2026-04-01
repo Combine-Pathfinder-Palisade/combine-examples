@@ -12,6 +12,7 @@ locals {
   aws_profile            = local.all_vars.aws_profile
   aws_state_profile      = local.all_vars.aws_state_profile
   env                    = local.all_vars.environment
+  env_lower              = lower(local.all_vars.environment)
 
   default_tags = merge(
     try(local.common_vars.default_aws_tags, null),
@@ -32,6 +33,7 @@ generate "provider" {
 provider "aws" {
   region = "${local.aws_region}"
   profile = "${local.aws_profile}"
+  custom_ca_bundle = "${local.environment_vars.aws_ca_cert_path}"
   default_tags {
     tags = var.default_tags
   }
@@ -48,7 +50,7 @@ remote_state {
     if_exists = "overwrite_terragrunt"
   }
   config = {
-    bucket         = "${local.env}-${local.aws_region}.tfstate"
+    bucket         = "${local.env_lower}-${local.aws_region}.tfstate"
     key            = "${path_relative_to_include()}/terraform.tfstate"
     region         = local.aws_region
     profile        = local.aws_state_profile

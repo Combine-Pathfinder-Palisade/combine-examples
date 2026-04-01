@@ -5,8 +5,8 @@ metadata:
   namespace: default
   annotations:
     alb.ingress.kubernetes.io/scheme: internal
-    alb.ingress.kubernetes.io/tags: Environment=combine-example
-    alb.ingress.kubernetes.io/subnets: subnet-12345678901234567,subnet-12345678901234567
+    alb.ingress.kubernetes.io/tags: Environment=combine-matt
+    alb.ingress.kubernetes.io/subnets: subnet-09e385b88b8e60357,subnet-0b8dd1e1017e21e82
 spec:
   ingressClassName: alb
   rules:

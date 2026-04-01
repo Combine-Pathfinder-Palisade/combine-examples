@@ -14,7 +14,7 @@ spec:
         app: echoserver
     spec:
       containers:
-      - image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/combine-eks/echoserver:2.5
+      - image: 663117128738.dkr.ecr.us-east-1.amazonaws.com/combine-eks/echoserver:2.5
         imagePullPolicy: Always
         name: echoserver
         ports:

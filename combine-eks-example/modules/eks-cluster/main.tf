@@ -3,13 +3,14 @@ locals {
   # Add Combine CA to system cert store
   echo ${var.combine_ca_chain_b64} | base64 -d > /etc/pki/ca-trust/source/anchors/combine-ca-chain.cert
   sudo update-ca-trust extract
-  EOF 
+  EOF
 }
 
 terraform {
   required_providers {
     aws = {
-      source = "hashicorp/aws"
+      source  = "hashicorp/aws"
+      version = "~> 5.57"
     }
   }
 }

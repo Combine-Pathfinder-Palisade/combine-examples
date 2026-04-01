@@ -19,6 +19,6 @@ metadata:
 spec:
   containers:
   - name: app
-    image: 123456789012.dkr.ecr.us-iso-east-1.c2s.ic.gov/combine-eks/centos:latest
+    image: 663117128738.dkr.ecr.us-iso-east-1.c2s.ic.gov/combine-eks/centos:latest
     command: ["/bin/sh"]
     args: ["-c", "while true; do echo $(date -u) >> /var/log/out.txt; sleep 5; done"]

@@ -22,7 +22,7 @@ variable "cluster_security_group_additional_cidr_blocks" {
   default     = []
 }
 variable "cluster_version" {
-  description = "Verison of the Amazon EKS cluster."
+  description = "Version of the Amazon EKS cluster."
   type        = string
 }
 variable "iam_role_permissions_boundary_arn" {
