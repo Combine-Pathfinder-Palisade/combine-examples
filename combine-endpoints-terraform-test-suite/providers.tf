@@ -1,5 +1,12 @@
 
 terraform {
+  backend "s3" {
+    bucket  = "combine-endpoints-test-suite-tfstate"
+    key     = "terraform.tfstate"
+    region  = "us-iso-east-1"
+    encrypt = true
+  }
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
