@@ -13,7 +13,7 @@ data "aws_subnets" "combine_az" {
 
   filter {
     name   = "tag:Name"
-    values = ["Combine-AZ*"]
+    values = ["*Combine-AZ*"]
   }
 }
 
