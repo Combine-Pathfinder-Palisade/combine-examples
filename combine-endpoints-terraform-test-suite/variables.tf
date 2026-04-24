@@ -26,3 +26,9 @@ variable "account_id" {
   description = "AWS account ID"
   type        = string
 }
+
+variable "run_id" {
+  description = "Unique identifier for this test run (e.g. GitHub Actions run ID)"
+  type        = string
+  default     = "local"
+}

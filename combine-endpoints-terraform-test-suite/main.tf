@@ -24,20 +24,22 @@ locals {
 
   combine_subnet_ids_all   = sort(data.aws_subnets.combine_az.ids)
   combine_subnet_ids_three = slice(local.combine_subnet_ids_all, 0, 3)
- 
+
+  suffix     = "-${var.run_id}"
+  trail_name = "TfCombineTest${local.suffix}"
 }
 
 resource "aws_s3_bucket" "tf_test_bucket" {
-  bucket = "sequoia-combine-test-location-constraint"
+  bucket = "sequoia-combine-test-location-constraint${local.suffix}"
 }
 
 
 resource "aws_s3_bucket" "tf_test_bucket_2" {
-  bucket = "tf-combine-test-permissions-bucket"
+  bucket = "tf-combine-test-permissions-bucket${local.suffix}"
 }
 
 resource "aws_s3_bucket" "tf_cloudtrail_bucket" {
-  bucket = "tf-cloudtrail-logs-${var.account_id}"
+  bucket = "tf-cloudtrail-logs-${var.account_id}${local.suffix}"
   force_destroy = true
 }
 
@@ -101,7 +103,7 @@ resource "aws_s3_bucket_policy" "tf_cloudtrail_bucket_policy" {
 }
 
 resource "aws_s3_bucket_inventory" "test_inventory" {
-  bucket = "tf-combine-test-permissions-bucket"
+  bucket = aws_s3_bucket.tf_test_bucket_2.id
   name   = "Test"
 
   included_object_versions = "Current"
@@ -114,7 +116,7 @@ resource "aws_s3_bucket_inventory" "test_inventory" {
   destination {
     bucket {
       format     = "CSV"
-      bucket_arn = "arn:${data.aws_partition.current.partition}:s3:::tf-combine-test-permissions-bucket"
+      bucket_arn = aws_s3_bucket.tf_test_bucket_2.arn
       account_id = var.account_id
     }
   }
@@ -122,27 +124,27 @@ resource "aws_s3_bucket_inventory" "test_inventory" {
 
 resource "aws_s3_bucket" "tf_test_bucket_west" {
   provider = aws.west
-  bucket   = "sequoia-combine-test-location-constraint-usiw1"
+  bucket   = "sequoia-combine-test-location-constraint-usiw1${local.suffix}"
 }
 
 resource "aws_sqs_queue" "tf_test_queue" {
-  name = "TfTest"
+  name = "TfTest${local.suffix}"
 }
 
 resource "aws_sqs_queue" "tf_test_redrive" {
-  name = "TfTestRedrive"
+  name = "TfTestRedrive${local.suffix}"
 }
 
 resource "aws_sqs_queue" "tf_test2_queue" {
-  name = "TfTest2"
+  name = "TfTest2${local.suffix}"
 }
 
 resource "aws_sns_topic" "tf_s3_test_topic" {
-  name = "TfS3Test"
+  name = "TfS3Test${local.suffix}"
 }
 
 resource "aws_sns_topic" "tf_test2_topic" {
-  name = "TfTest2"
+  name = "TfTest2${local.suffix}"
 }
 
 resource "aws_sns_topic_subscription" "tf_test2_subscription" {
@@ -152,7 +154,7 @@ resource "aws_sns_topic_subscription" "tf_test2_subscription" {
 }
 
 resource "aws_iam_role" "tf_combine_test_role" {
-  name = "TfCombineTest"
+  name = "TfCombineTest${local.suffix}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -243,7 +245,7 @@ resource "aws_iam_role_policy" "allow_sqs_send" {
 }
 
 resource "aws_iam_role" "tf_combine_test_cw_events_role" {
-  name = "TfCombineTestCWEventsRole"
+  name = "TfCombineTestCWEventsRole${local.suffix}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -260,7 +262,7 @@ resource "aws_iam_role" "tf_combine_test_cw_events_role" {
 }
 
 resource "aws_iam_policy" "tf_combine_test_policy" {
-  name = "TfCombineTest"
+  name = "TfCombineTest${local.suffix}"
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -272,12 +274,12 @@ resource "aws_iam_policy" "tf_combine_test_policy" {
 }
 
 resource "aws_cloudwatch_log_group" "tf_log_group" {
-  name              = "TF_CombineTest"
+  name              = "TF_CombineTest${local.suffix}"
   retention_in_days = 7
 }
 
 resource "aws_cloudwatch_metric_alarm" "tf_combine_alarm" {
-  alarm_name                = "TfCombineTest"
+  alarm_name                = "TfCombineTest${local.suffix}"
   comparison_operator       = "GreaterThanThreshold"
   evaluation_periods        = 1
   metric_name               = "CPUUtilization"
@@ -292,14 +294,14 @@ resource "aws_cloudwatch_metric_alarm" "tf_combine_alarm" {
 }
 
 resource "aws_ssm_parameter" "tf_test_secure_string" {
-  name   = "TfTest2"
+  name   = "TfTest2${local.suffix}"
   type   = "SecureString"
   value  = "Test"
   key_id = aws_kms_key.tf_combine_key.arn
 } #Evaluate this see if it uses the correct arn
 
 resource "aws_dynamodb_table" "tf_combine_endpoints_test_gt" {
-  name         = "tf-combine-endpoints-test-gt"
+  name         = "tf-combine-endpoints-test-gt${local.suffix}"
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "test"
 
@@ -320,7 +322,7 @@ resource "aws_kms_key" "tf_combine_key" {
   }
 
   tags = {
-    Name = "TfCombineTestKey"
+    Name = "TfCombineTestKey${local.suffix}"
   }
 }
 
@@ -354,7 +356,7 @@ resource "aws_kms_key_policy" "tf_combine_key_policy" {
         Resource = "*",
         Condition = {
           StringEquals = {
-            "kms:EncryptionContext:aws:cloudtrail:arn" = "arn:${data.aws_partition.current.partition}:cloudtrail:${data.aws_region.current.name}:${var.account_id}:trail/TfCombineTest"
+            "kms:EncryptionContext:aws:cloudtrail:arn" = "arn:${data.aws_partition.current.partition}:cloudtrail:${data.aws_region.current.name}:${var.account_id}:trail/${local.trail_name}"
           }
         }
       }
@@ -363,33 +365,33 @@ resource "aws_kms_key_policy" "tf_combine_key_policy" {
 }
 
 resource "aws_cloudtrail" "tf_combine_test_trail" {
-  name                          = "TfCombineTest"
+  name                          = local.trail_name
   s3_bucket_name                = aws_s3_bucket.tf_cloudtrail_bucket.bucket
   s3_key_prefix                 = "EndpointsTest"
   is_multi_region_trail         = false
   include_global_service_events = false
-  cloud_watch_logs_group_arn    = "arn:${data.aws_partition.current.partition}:logs:${data.aws_region.current.name}:${var.account_id}:log-group:TF_CombineTest:*" //aws_cloudwatch_log_group.tf_log_group.arn //"arn:aws-iso:logs:us-iso-east-1:${var.account_id}:log-group:CombineTest:*"
-  cloud_watch_logs_role_arn     = aws_iam_role.tf_combine_test_role.arn                                         //"arn:aws-iso:iam::${var.account_id}:role/service-role/CombineTestCloudTrailRole"
-  kms_key_id                    = aws_kms_key.tf_combine_key.arn                                                //"arn:aws-iso:kms:us-iso-east-1:${var.account_id}:key/3000dcaa-c17a-4e5d-8e3a-5119afa0cf6f"
+  cloud_watch_logs_group_arn    = "${aws_cloudwatch_log_group.tf_log_group.arn}:*"
+  cloud_watch_logs_role_arn     = aws_iam_role.tf_combine_test_role.arn
+  kms_key_id                    = aws_kms_key.tf_combine_key.arn
 }
 
 resource "aws_db_subnet_group" "tf_combine_endpoints_subnet_group" {
-  name = "tf-combine-endpoints-test-subnet-group"
+  name = "tf-combine-endpoints-test-subnet-group${local.suffix}"
   subnet_ids = local.combine_subnet_ids_three
 }
 
 resource "aws_rds_cluster" "tf_combine_cluster" {
-  cluster_identifier   = "tf-combine-endpoint-test-cluster"
+  cluster_identifier   = "tf-combine-endpoint-test-cluster${local.suffix}"
   engine               = "aurora-postgresql"
   master_username      = "combineadmin"
   master_password      = "Combine1275317"
   db_subnet_group_name = aws_db_subnet_group.tf_combine_endpoints_subnet_group.name
-  availability_zones   = local.azs_three //["us-iso-east-1a", "us-iso-east-1b", "us-iso-east-1c"]
+  availability_zones   = local.azs_three
   skip_final_snapshot  = true
 }
 
 resource "aws_db_instance" "tf_combine_instance" {
-  identifier           = "tf-combine-endpoint-test-instance"
+  identifier           = "tf-combine-endpoint-test-instance${local.suffix}"
   instance_class       = "db.t3.micro"
   engine               = "mysql"
   engine_version       = "8.0.40" #seems engine needs to be specified in terraform or it will send a request with empty version
@@ -443,13 +445,13 @@ resource "aws_lb_listener" "tf_combine_listener" {
 }*/
 
 resource "aws_security_group" "lambda_sg" {
-  name        = "combine-lambda-sg"
+  name        = "combine-lambda-sg${local.suffix}"
   description = "Security group for Lambda function"
   vpc_id      = var.vpc_id
 }
 
 resource "aws_lambda_function" "tf_combine_test_lambda" {
-  function_name    = "TFTest"
+  function_name    = "TFTest${local.suffix}"
   role             = aws_iam_role.tf_combine_test_role.arn
   handler          = "index.handler"
   runtime          = "nodejs20.x"
@@ -487,7 +489,7 @@ resource "aws_lambda_permission" "tf_combine_test_lambda_permission_ec2" {
 }
 
 resource "aws_kinesis_stream" "combine_test" {
-  name             = "TfCombineTest"
+  name             = "TfCombineTest${local.suffix}"
   shard_count      = 1
   retention_period = 24
 }
