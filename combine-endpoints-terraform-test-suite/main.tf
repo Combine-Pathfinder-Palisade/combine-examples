@@ -386,7 +386,6 @@ resource "aws_rds_cluster" "tf_combine_cluster" {
   master_username      = "combineadmin"
   master_password      = "Combine1275317"
   db_subnet_group_name = aws_db_subnet_group.tf_combine_endpoints_subnet_group.name
-  availability_zones   = local.azs_three
   skip_final_snapshot  = true
 }
 
