@@ -493,7 +493,8 @@ resource "aws_kinesis_stream" "combine_test" {
   shard_count      = 1
   retention_period = 24
 }
-resource "aws_eip" "dummy" {
+## Commented out - DescribeAddressesAttribute not supported in Combine emulator
+/*resource "aws_eip" "dummy" {
   domain = "vpc"   # required in newer provider versions
 
   tags = {
@@ -509,4 +510,4 @@ resource "aws_eip" "bastion" {
     Environment = "test"
     Project     = "combine-lab"
   }
-}
+}*/
