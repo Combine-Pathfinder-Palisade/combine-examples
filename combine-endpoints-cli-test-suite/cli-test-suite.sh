@@ -217,7 +217,7 @@ validate_rewrite_smart() {
   local region="${3:-}"
   local jq_filter="${4:-}"
   local env_var_name="${5:-}"
-  local pattern="arn:aws-iso(-b)?:|us-iso(-b)?|usie\\d?|usiw\\d?|usib\\d?|c2s.ic.gov|sc2s.sgov.gov|gov\.ic\.c2s\.us-iso-east-1|gov\.sgov\.sc2s\.us-isob-east-1|com\.amazonaws\.us-iso(-b)?-east-1\.s3"
+  local pattern="arn:aws-iso(-b)?:|us-iso(-b)?|usie[0-9]?|usiw[0-9]?|usib[0-9]?|c2s.ic.gov|sc2s.sgov.gov|gov\.ic\.c2s\.us-iso-east-1|gov\.sgov\.sc2s\.us-isob-east-1|com\.amazonaws\.us-iso(-b)?-east-1\.s3"
 
   printf "🔍 %s%s: " "$label" "${region:+ ($region)}"
 
@@ -311,7 +311,7 @@ validate_rewrite_with_exception() {
   local label="$1"
   local cmd="$2"
   local exception_pattern="$3"
-  local pattern="arn:aws-iso(-b)?:|us-iso(-b)?|usie\\d?|usiw\\d?|usib\\d?|c2s.ic.gov|sc2s.sgov.gov|gov\.ic\.c2s\.us-iso-east-1|gov\.sgov\.sc2s\.us-isob-east-1|com\.amazonaws\.us-iso(-b)?-east-1\.s3"
+  local pattern="arn:aws-iso(-b)?:|us-iso(-b)?|usie[0-9]?|usiw[0-9]?|usib[0-9]?|c2s.ic.gov|sc2s.sgov.gov|gov\.ic\.c2s\.us-iso-east-1|gov\.sgov\.sc2s\.us-isob-east-1|com\.amazonaws\.us-iso(-b)?-east-1\.s3"
 
   printf "🔍 %s: " "$label"
 
