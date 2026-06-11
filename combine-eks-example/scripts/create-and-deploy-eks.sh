@@ -444,7 +444,7 @@ $(echo -e "$POD_SUBNET_LIST")
   cluster_encryption_config                     = {}
   cluster_security_group_additional_cidr_blocks = ["10.0.0.0/16"]
   cluster_name                                  = "combine-\${include.root.locals.environment_vars.environment}-eks"
-  cluster_version                               = "1.30"
+  cluster_version                               = "1.35"
   cluster_endpoint_public_access                = false
 
   cluster_admin_arn = "arn:aws:iam::\${include.root.locals.environment_vars.aws_account_id}:role/Combine-\${include.root.locals.environment_vars.environment}-TS-WLDEVELOPER"
@@ -494,7 +494,7 @@ $(echo -e "$SUBNET_LIST")
   cluster_encryption_config                     = {}
   cluster_security_group_additional_cidr_blocks = ["10.0.0.0/16"]
   cluster_name                                  = "combine-\${include.root.locals.environment_vars.environment}-eks"
-  cluster_version                               = "1.30"
+  cluster_version                               = "1.35"
   cluster_endpoint_public_access                = false
   cluster_addons                                = {}
 
@@ -725,7 +725,7 @@ dependency "eks_cluster" {
 
   mock_outputs = {
     cluster_name    = "mock-cluster"
-    cluster_version = "1.30"
+    cluster_version = "1.35"
   }
 }
 
