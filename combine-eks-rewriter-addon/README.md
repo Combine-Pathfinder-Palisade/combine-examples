@@ -87,6 +87,33 @@ see. Think of it as Combine's rewriter, running where the control plane writes.
 
 ---
 
+## Add-on support expectations
+
+This webhook makes add-ons **installable and pullable** — it gets the control-plane-injected image
+to pull. That is the whole of its job, and it's solved across the add-on class. Whether an add-on
+then **functions** depends on what backend it talks to at runtime — which this webhook does not (and
+cannot) address. Add-ons fall into three tiers:
+
+| Tier | Add-ons | Webhook (image pull) | Runtime function |
+| --- | --- | --- | --- |
+| **Self-contained** | coredns, kube-proxy, vpc-cni, eks-pod-identity-agent, snapshot-controller, eks-node-monitoring-agent, aws-ec2-local-instance-store-csi-driver | ✅ | ✅ — only needs to run |
+| **Needs IRSA + an emulated AWS service** | aws-ebs-csi-driver, aws-fsx-csi-driver, aws-mountpoint-s3-csi-driver | ✅ | ✅ if the role is wired and the backing service (EC2/FSx/S3) is emulated |
+| **Needs a backend *data* endpoint** | aws-guardduty-agent, amazon-cloudwatch-observability | ✅ | ⛔ only works if that data endpoint is emulated + resolvable (see below) |
+
+**Backend-data-endpoint add-ons.** Some agents call an AWS *data-plane* endpoint at runtime that is
+distinct from the service's control API. Example: the GuardDuty agent pulls fine (this webhook
+rewrites its image), starts, then crashes pinging `guardduty-data.<region>.amazonaws.com` — which
+the enclave can't resolve. Combine emulating the GuardDuty *API* (`guardduty.<region>`) is not
+enough; the *data* endpoint (`guardduty-data.<region>`) must also be emulated and routed to Combine
+(DNS + firewall allow), the same way `ecr` / `sts` / `ec2` are. CloudWatch Observability is
+analogous (its agents ship to CloudWatch Logs/Metrics data endpoints). These are per-service Combine
+emulation tasks, **out of scope for this webhook** — it has already done its part (the image pulled).
+
+So the honest summary: **the webhook delivers the image; a service-backed add-on additionally needs
+its data endpoint emulated to be functional.**
+
+---
+
 ## Layout
 
 | File | Purpose |

@@ -28,12 +28,25 @@ webhooks:
         apiGroups: [""]
         apiVersions: ["v1"]
         resources: ["pods"]
-    # Scope to where the managed add-ons land. kube-system covers CNI / coredns / kube-proxy /
-    # ebs-csi / pod-identity / etc. Add other add-on namespaces (e.g. amazon-cloudwatch) as needed.
+    # Watch ALL namespaces except our own. The rewrite is self-limiting — it only touches images
+    # matching the commercial EKS add-on ECR pattern (+ the account allow list); every other image
+    # passes through untouched. This is the robust default because AWS-managed add-ons deploy to
+    # several namespaces (kube-system, amazon-guardduty, amazon-cloudwatch, …) and a fixed list will
+    # silently miss any you didn't enumerate (and any AWS adds later). failurePolicy: Ignore keeps a
+    # cluster-wide scope safe — a webhook outage never blocks pod creation.
     namespaceSelector:
       matchExpressions:
         - key: kubernetes.io/metadata.name
-          operator: In
-          values: ["kube-system"]
-    # Belt-and-suspenders: never mutate our own namespace.
-    objectSelector: {}
+          operator: NotIn
+          values: ["combine-system"]   # never mutate our own namespace
+    #
+    # --- Alternative: tighter scope to specific add-on namespaces (smaller admission footprint) ---
+    # Trade-off: you must keep this list in sync with where add-ons actually deploy, or they get
+    # missed (this is exactly how aws-guardduty-agent, which lives in amazon-guardduty, slipped past
+    # a kube-system-only scope). Prefer the all-namespaces form above unless you have a reason not to.
+    #
+    # namespaceSelector:
+    #   matchExpressions:
+    #     - key: kubernetes.io/metadata.name
+    #       operator: In
+    #       values: ["kube-system", "amazon-guardduty", "amazon-cloudwatch"]
