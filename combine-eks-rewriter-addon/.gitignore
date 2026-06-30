@@ -1,0 +1,6 @@
+/combine-eks-rewriter-addon
+/webhook
+*.crt
+*.key
+*.csr
+*.srl

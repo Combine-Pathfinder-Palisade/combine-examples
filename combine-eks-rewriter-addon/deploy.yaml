@@ -1,0 +1,83 @@
+# Namespace + Deployment + Service for the combine-eks-rewriter webhook.
+# The MutatingWebhookConfiguration is intentionally in a SEPARATE file (webhook.yaml) so that
+# re-applying this file never clobbers the caBundle that gen-certs.sh injects.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: combine-system
+  labels:
+    kubernetes.io/metadata.name: combine-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: combine-eks-rewriter
+  namespace: combine-system
+  labels: {app: combine-eks-rewriter}
+spec:
+  replicas: 2
+  # Recreate (not RollingUpdate): with hostNetwork the host port can't be double-bound during a
+  # surge, so a rolling update would deadlock on "didn't have free ports".
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: combine-eks-rewriter}
+  template:
+    metadata:
+      labels: {app: combine-eks-rewriter}
+    spec:
+      # hostNetwork so the webhook does NOT depend on the cluster CNI. This lets it run on a node
+      # whose CNI is broken (often the very node we need to fix) and avoids the cold-start deadlock
+      # where every node needs a CNI fix that requires the webhook that can't schedule anywhere.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      # Keep the replicas on separate nodes (hostNetwork binds host port 8443 — one per node).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app: combine-eks-rewriter}
+      containers:
+        - name: webhook
+          # CHANGE ME: push the built image to your cluster's ISO ECR and reference it ISO-form so
+          # the webhook's OWN image pulls via the proven Combine path.
+          image: <ISO_ECR_ACCOUNT>.dkr.ecr.us-iso-east-1.c2s.ic.gov/combine-eks-rewriter:0.1.0
+          env:
+            # The emulated region + DNS suffix Combine serves (set per partition).
+            - {name: COMBINE_ISO_REGION,     value: "us-iso-east-1"}
+            - {name: COMBINE_ISO_DNS_SUFFIX, value: "c2s.ic.gov"}
+            # Optional allow list of AWS-owned EKS add-on registry accounts for the host region(s)
+            # this partition maps onto. Empty => rewrite ANY commercial dkr.ecr host. See README.
+            # Source of truth: https://docs.aws.amazon.com/eks/latest/userguide/add-ons-images.html
+            - {name: COMBINE_ADDON_ECR_ACCOUNTS, value: "602401143452,151742754352,013241004608"}
+          ports:
+            - {containerPort: 8443}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8443, scheme: HTTPS}
+            initialDelaySeconds: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8443, scheme: HTTPS}
+            initialDelaySeconds: 5
+          volumeMounts:
+            - {name: tls, mountPath: /tls, readOnly: true}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532   # distroless 'nonroot' UID — numeric so the kubelet can verify non-root
+            runAsGroup: 65532
+      volumes:
+        - name: tls
+          secret:
+            secretName: combine-eks-rewriter-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: combine-eks-rewriter
+  namespace: combine-system
+spec:
+  selector: {app: combine-eks-rewriter}
+  ports:
+    - {port: 443, targetPort: 8443}

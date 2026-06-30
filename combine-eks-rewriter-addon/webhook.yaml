@@ -1,0 +1,39 @@
+# MutatingWebhookConfiguration for combine-eks-rewriter.
+#
+# Kept separate from deploy.yaml so that re-applying the Deployment/Service never resets the
+# caBundle. Apply this ONCE, then run gen-certs.sh (which injects the caBundle into the live
+# object). If you re-apply THIS file, you must re-run gen-certs.sh afterward.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: combine-eks-rewriter
+webhooks:
+  - name: rewrite.eks-addon-registry.combine
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    # NEVER block pod creation. If the webhook is unreachable, pods are admitted unmutated — i.e.
+    # the no-webhook behavior. It can only fix pulls, never break them.
+    failurePolicy: Ignore
+    reinvocationPolicy: IfNeeded
+    timeoutSeconds: 5
+    clientConfig:
+      service:
+        name: combine-eks-rewriter
+        namespace: combine-system
+        path: /mutate
+        port: 443
+      caBundle: ""   # injected by gen-certs.sh — leave empty here
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+    # Scope to where the managed add-ons land. kube-system covers CNI / coredns / kube-proxy /
+    # ebs-csi / pod-identity / etc. Add other add-on namespaces (e.g. amazon-cloudwatch) as needed.
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values: ["kube-system"]
+    # Belt-and-suspenders: never mutate our own namespace.
+    objectSelector: {}
