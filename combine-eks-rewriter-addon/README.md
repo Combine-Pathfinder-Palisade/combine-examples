@@ -1,5 +1,3 @@
-# Please note that this webhook is in WIP status.
-
 # combine-eks-rewriter-addon
 
 A small Kubernetes **mutating admission webhook** that extends Combine's emulation **into the
@@ -139,11 +137,13 @@ The per-region account numbers are published at
 <https://docs.aws.amazon.com/eks/latest/userguide/add-ons-images.html> (`602401143452` covers most
 standard commercial regions; GovCloud and several opt-in regions have their own).
 
+_Note that on the high side these account numbers will be different. Of course, this webhook will not be needed on your clusters in the high side._
+
 ## Build & push
 
-The image must live in your cluster's **ISO ECR** and be referenced ISO-form (so the webhook's own
+The image must live in the AWS account's ECR and be referenced ISO-form (so the webhook's own
 image pulls through Combine like everything else). Build it where the Go/distroless base images are
-reachable, push to your ISO ECR account, then set that reference in `deploy.yaml`.
+reachable, push to your AWS account, then set that reference in `deploy.yaml`.
 
 ```bash
 IMG=<ISO_ECR_ACCOUNT>.dkr.ecr.us-iso-east-1.c2s.ic.gov/combine-eks-rewriter:0.1.0
