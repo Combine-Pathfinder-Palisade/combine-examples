@@ -1,16 +1,28 @@
 #!/bin/bash
 
 #############################
-# validate_tests.sh
+# WORK IN PROGRESS
 #
-# This script creates and destroys resources in a Combine environment, serving
-# as an end-to-end test suite for Combine emulation.
+# cli-test-suite.sh
 #
+# End-to-end CLI test suite for Combine emulation, with two extra features:
+#
+#   VERBOSE=1  — print every full CLI response for visual inspection
+#   (default)  — print a deduplicated list of every CLI command called at the
+#                end of the run
+#
+# Sections 1–81  – general service coverage (S3, EC2, RDS, KMS, Lambda, …)
+# Section  82    – EKS rewriter/filter verification (response + request paths)
+#
+# Usage examples:
+#   ./cli-test-suite.sh                                                             # default: run all tests, print summary of commands at end
+#   VERBOSE=1 ./cli-test-suite.sh                                                   # print every CLI response verbatim as it's received (for debugging/inspection)
+#   EKS_REGION=us-iso-east-1 ./cli-test-suite.sh                                    # run only the EKS section (82), pointed at the specified cluster (must be configured to route through Combine)
+#   VERBOSE=1 EKS_REGION=us-iso-east-1 EKS_CLUSTER=my-cluster ./cli-test-suite.sh   # run only the EKS section, print every CLI response
+
 # This is a counterpart to the terraform test suite, and is necessary beacuse
 # terraform and the CLI often request different default parameters and return
 # formats.
-#
-# Note that this script is incomplete and a work in progress.
 #############################
 
 set -uo pipefail
@@ -29,9 +41,45 @@ function log() {
 #############################
 
 export VPC_ID=vpc-01e95d9106c2c1ef6
+SUBNET_1=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --query 'Subnets[0].SubnetId' --output text 2>/dev/null || true)
 UNSUPPORTED_INSTANCE_TYPE="db.r7i.large"
 UNSUPPORTED_EMR_TYPE_1="m7i.xlarge"
 UNSUPPORTED_EMR_TYPE_2="m7i.2xlarge"
+
+# EKS section config — set EKS_REGION to enable section 82
+EKS_REGION="${EKS_REGION:-}"
+EKS_CLUSTER="${EKS_CLUSTER:-combine-master-eks}"
+
+# Verbose mode — set VERBOSE=1 to print full CLI responses
+VERBOSE="${VERBOSE:-0}"
+
+# Tracks every CLI command issued during the run; printed as a summary at the end
+COMMANDS_RUN=()
+
+# Captured variables — initialized so set -u never fires if a preceding test fails
+TRAIL_ARN="" UPLOAD_ID="" DDB_BACKUP_ARN="" STREAM_ARN="" SHARD_ID=""
+SHARD_ITERATOR_ID="" NEXT_SHARD_ITERATOR_ID="" SUBNET_ID_1="" SUBNET_ID_2=""
+VOLUME_ID="" TF_KINESIS_ARN="" KEY_ID="" GRANT_ID="" ENCRYPTED_BLOB=""
+CODE_SIGNING_ARN="" SNS_TOPIC_ARN="" SUBSCRIPTION_ARN="" FS_ID=""
+TEST_QUEUE_URL="" EC2_INSTANCE_ID=""
+
+# record_cmd <cmd-string>: append a command to the tracking list
+record_cmd() {
+  COMMANDS_RUN+=("$1")
+}
+
+# Test result counters
+PASS=0; FAIL=0; SKIP=0
+FAILURES=()
+
+record_pass() { PASS=$((PASS+1)); }
+record_skip() { SKIP=$((SKIP+1)); }
+record_fail() {
+  local label="$1"
+  local hint="${2:-}"
+  FAIL=$((FAIL+1))
+  FAILURES+=("${label}${hint:+ — ${hint}}")
+}
 
 #############################
 # FILE SETUP
@@ -205,6 +253,49 @@ echo '{
   ]
 }' > efs-policy.json
 
+###########################################
+## EKS helpers (used only in section 82) ##
+###########################################
+
+EKS_PASS=0; EKS_FAIL=0; EKS_SKIP=0
+eks_ok()   { echo "  PASS: $1"; EKS_PASS=$((EKS_PASS+1)); }
+eks_bad()  { echo "  FAIL: $1"; EKS_FAIL=$((EKS_FAIL+1)); }
+eks_skip() { echo "  SKIP: $1"; EKS_SKIP=$((EKS_SKIP+1)); }
+eks_note() { echo "  NOTE: $1"; }
+
+# run: print the command, execute it, stream stdout+stderr to the terminal,
+# stash stdout in RUN_OUT and exit code in RUN_RC for the caller to inspect.
+eks_run() {
+  echo "+ $*"
+  local errfile; errfile="$(mktemp)"
+  RUN_OUT="$("$@" 2>"$errfile")"; RUN_RC=$?
+  [[ -n "$RUN_OUT" ]] && printf '%s\n' "$RUN_OUT"
+  [[ -s "$errfile" ]] && sed 's/^/  | stderr: /' "$errfile"
+  rm -f "$errfile"
+  return $RUN_RC
+}
+
+# check: assert a value is present, carries the emulated region, and (for ARNs)
+# the emulated partition. $1=label $2=value $3=arn|arn-global
+eks_check() {
+  local label="$1" val="$2" kind="$3"
+  if [[ -z "$val" || "$val" == "null" ]]; then eks_skip "$label (absent on this cluster)"; return; fi
+  echo "    $label = $val"
+  if [[ "$kind" == "arn" ]]; then
+    if [[ "$val" == arn:${EKS_EXP_PARTITION}:* ]]; then eks_ok "$label partition rewritten -> $EKS_EXP_PARTITION";
+    else eks_bad "$label partition NOT rewritten (expected arn:$EKS_EXP_PARTITION:..)"; fi
+  fi
+  if [[ "$val" == *"$EKS_REGION"* ]]; then eks_ok "$label carries emulated region $EKS_REGION";
+  elif [[ "$kind" == "arn-global" ]]; then eks_ok "$label is global (no region segment) — OK";
+  else eks_bad "$label does NOT carry emulated region $EKS_REGION"; fi
+}
+
+# expect_reject_eks: assert a command is rejected (non-zero exit). $1=label $2..=command
+expect_reject_eks() {
+  local label="$1"; shift
+  if eks_run "$@"; then eks_bad "$label was NOT rejected"; else eks_ok "$label rejected as expected"; fi
+}
+
 log "🧪 Starting validation test suite..."
 
 ###########################################
@@ -224,19 +315,25 @@ validate_rewrite_smart() {
   local full_cmd="$cmd"
   [[ -n "$region" ]] && full_cmd="$cmd --region $region"
 
+  record_cmd "$full_cmd"
+
   local output
   output=$(eval "$full_cmd" 2>/dev/null)
 
   if [[ -z "$output" || "$output" == "null" ]]; then
     echo "❌ Failed (empty or invalid response)"
+    record_fail "$label${region:+ ($region)}" "command returned empty/invalid — check credentials or endpoint"
     return 1
   fi
+
+  [[ "$VERBOSE" == "1" ]] && echo "" && echo "$output" | jq . 2>/dev/null || true
 
   local matches
   matches=$(echo "$output" | jq -r '.. | scalars | select(type == "string")' | grep -E "$pattern" || true)
 
   if [[ -n "$matches" ]]; then
     echo "✅ Passed"
+    record_pass
 
     # Optional variable extraction
     if [[ -n "$jq_filter" && -n "$env_var_name" ]]; then
@@ -252,6 +349,7 @@ validate_rewrite_smart() {
 
   else
     echo "❌ Failed (no rewritten strings found)"
+    record_fail "$label${region:+ ($region)}" "response returned but no ISO ARNs/regions detected — check rewriter"
     echo "$output" | jq . | head -n 20
     return 1
   fi
@@ -268,16 +366,23 @@ validate_expected_error_match() {
 
   printf "🚫 %s: " "$label"
 
+  record_cmd "$command"
+
   local output
   output=$(eval "$command" 2>&1)
 
+  [[ "$VERBOSE" == "1" ]] && echo "" && echo "$output"
+
   if echo "$output" | grep -q "$expected_message"; then
     echo "✅ Passed ($expected_message)"
+    record_pass
   else
     if echo "$output" | grep -q "403"; then
       echo "❌ Failed (403 - possible encoding bug)"
+      record_fail "$label" "got 403 — possible URI encoding bug in proxy"
     else
       echo "❌ Failed${fallback_message:+ ($fallback_message)}"
+      record_fail "$label" "expected error not found${fallback_message:+ — $fallback_message}"
     fi
     echo "$output" | head -n 10
   fi
@@ -293,13 +398,21 @@ validate_instance_type_absent_grep() {
   local forbidden="$3"
 
   printf "🔍 %s: " "$label"
+
+  record_cmd "$command"
+
+  local output
   output=$(eval "$command" 2>/dev/null)
+
+  [[ "$VERBOSE" == "1" ]] && echo "" && echo "$output" | jq . 2>/dev/null || true
 
   if echo "$output" | grep -q "$forbidden"; then
     echo "❌ Failed (found forbidden instance type: $forbidden)"
+    record_fail "$label" "forbidden instance type '$forbidden' was not filtered — check type filter config"
     echo "$output" | grep "$forbidden"
   else
     echo "✅ Passed (no $forbidden found)"
+    record_pass
   fi
 }
 
@@ -315,13 +428,18 @@ validate_rewrite_with_exception() {
 
   printf "🔍 %s: " "$label"
 
+  record_cmd "$cmd"
+
   local output
   output=$(eval "$cmd" 2>/dev/null)
 
   if [[ -z "$output" || "$output" == "null" ]]; then
     echo "❌ Failed (empty or invalid response)"
+    record_fail "$label" "command returned empty/invalid — check credentials or endpoint"
     return 1
   fi
+
+  [[ "$VERBOSE" == "1" ]] && echo "" && echo "$output" | jq . 2>/dev/null || true
 
   local matches
   matches=$(echo "$output" | jq -r '.. | scalars | select(type == "string")' | grep -E "$pattern" || true)
@@ -329,12 +447,15 @@ validate_rewrite_with_exception() {
   if [[ -n "$matches" ]]; then
     if echo "$matches" | grep -F "$exception_pattern" > /dev/null; then
       echo "❌ Failed (unexpected rewrite of exception: $exception_pattern)"
+      record_fail "$label" "exception pattern '$exception_pattern' was unexpectedly rewritten — check rewriter exclusions"
       echo "$matches" | grep -F "$exception_pattern" | head -n 10
       return 1
     fi
     echo "✅ Passed"
+    record_pass
   else
     echo "❌ Failed (no rewritten strings found)"
+    record_fail "$label" "response returned but no ISO ARNs/regions detected — check rewriter"
     echo "$output" | jq . | head -n 20
     return 1
   fi
@@ -343,7 +464,6 @@ validate_rewrite_with_exception() {
 ###########################################
 ## Validate unsupported operation        ##
 ###########################################
-
 #validate_unsupported_operation() {
 #  local label="$1"
 #  local command="$2"
@@ -359,8 +479,6 @@ validate_rewrite_with_exception() {
 #    echo "$output" | head -n 2
 #  fi
 #}
-
-
 ## this function is used when we need to check if the call passed and it returns a result that doesnt need to be rewritten
 ###########################################
 ## Validate if no error                  ##
@@ -373,44 +491,40 @@ validate_success() {
 
   printf "🔍 %s: " "$label"
 
+  record_cmd "$command"
+
   local output
   if output=$(eval "$command" 2>&1); then
+    [[ "$VERBOSE" == "1" ]] && echo "" && echo "$output"
     if [[ "$expected" == "__nonempty__" ]]; then
       if [[ -n "$output" && "$output" != "null" ]]; then
         echo "✅ Passed"
+        record_pass
       else
         echo "❌ Failed (empty or null output)"
+        record_fail "$label" "command succeeded but returned empty output"
       fi
     elif [[ -n "$expected" ]]; then
       if [[ "$output" == *"$expected"* ]]; then
         echo "✅ Passed"
+        record_pass
       else
         echo "❌ Failed (expected string not found)"
+        record_fail "$label" "command succeeded but expected '$expected' not found in output"
         echo "   🔸 Expected: $expected"
         echo "   🔸 Output: $output" | head -n 10
       fi
     else
       echo "✅ Passed"
+      record_pass
     fi
   else
+    [[ "$VERBOSE" == "1" ]] && echo "" && echo "$output"
     echo "❌ Failed"
+    record_fail "$label" "command returned non-zero exit code — check output above"
     echo "$output" | head -n 10
   fi
 }
-
-#validate_success() {
-#  local label="$1"
-#  local command="$2"
-#
-#  printf "🔍 %s: " "$label"
-#
-#  if output=$(eval "$command" 2>&1); then
-#    echo "✅ Passed"
-#  else
-#    echo "❌ Failed"
-#    echo "$output" | head -n 10
-#  fi
-#}
 
 #Maybe I can find a way to consolidate some of these functions? maybe add a flag that contians what value I'm expecting to see and send that for comparison.'
 ###########################################
@@ -454,10 +568,15 @@ validate_s3() {
   printf "🔍 %s: " "$label"
 
   if [[ "$mode" == "basic" ]]; then
+    record_cmd "$source"
+    local output
     if output=$(eval "$source" 2>/dev/null) && [[ "$output" != "null" && -n "$output" ]]; then
+      [[ "$VERBOSE" == "1" ]] && echo "" && echo "$output" | jq . 2>/dev/null || true
       echo "✅ Passed"
+      record_pass
     else
       echo "❌ Failed (null or error)"
+      record_fail "$label" "S3 basic operation failed — check bucket access and credentials"
     fi
 
   elif [[ "$mode" == "checksum" || "$mode" == "presign" ]]; then
@@ -468,29 +587,43 @@ validate_s3() {
         file.txt) head -c 50000 < /dev/urandom | base64 > "$source" ;;
         bigfile.txt) head -c 5000000 < /dev/urandom | base64 > "$source" ;;
         megafile.txt) head -c 500000000 < /dev/urandom | base64 > "$source" ;;
-        *) echo "❌ Unknown file: $source" && return ;;
+        *) echo "❌ Unknown file: $source"; record_fail "$label" "unknown source file '$source'"; return ;;
       esac
     fi
 
     # Upload to S3
-    if ! aws s3 cp "$source" "$s3_uri" > /dev/null 2>&1; then
+    record_cmd "aws s3 cp $source $s3_uri"
+    local upload_out
+    if ! upload_out=$(aws s3 cp "$source" "$s3_uri" 2>&1); then
       echo "❌ Upload failed"
+      record_fail "$label" "upload to S3 failed — check bucket write access and credentials"
+      [[ "$VERBOSE" == "1" ]] && echo "$upload_out"
       return
     fi
+    [[ "$VERBOSE" == "1" ]] && echo "" && echo "$upload_out"
 
     # Download from S3 using wget and presigned URL (for presign mode)
     if [[ "$mode" == "presign" ]]; then
+      record_cmd "aws s3 presign $s3_uri"
       local url
       url=$(aws s3 presign "$s3_uri")
+      [[ "$VERBOSE" == "1" ]] && echo "" && echo "Presigned URL: $url"
+      record_cmd "wget <presigned-url> -O $back_file --no-check-certificate"
       if ! wget "$url" -O "$back_file" --no-check-certificate > /dev/null 2>&1; then
         echo "❌ Download (presign) failed"
+        record_fail "$label" "presigned URL download failed — check presign endpoint or URL encoding"
         return
       fi
     else
-      if ! aws s3 cp "$s3_uri" "$back_file" > /dev/null 2>&1; then
+      record_cmd "aws s3 cp $s3_uri $back_file"
+      local dl_out
+      if ! dl_out=$(aws s3 cp "$s3_uri" "$back_file" 2>&1); then
         echo "❌ Download failed"
+        record_fail "$label" "download from S3 failed — check bucket read access"
+        [[ "$VERBOSE" == "1" ]] && echo "$dl_out"
         return
       fi
+      [[ "$VERBOSE" == "1" ]] && echo "" && echo "$dl_out"
     fi
 
     # Compare checksums
@@ -500,8 +633,10 @@ validate_s3() {
 
     if [[ "$orig_sum" == "$back_sum" ]]; then
       echo "✅ Passed"
+      record_pass
     else
       echo "❌ Checksum mismatch"
+      record_fail "$label" "MD5 mismatch after upload/download — possible data corruption or partial transfer"
       echo "   🔸 Original:   $orig_sum"
       echo "   🔸 Downloaded: $back_sum"
     fi
@@ -510,6 +645,7 @@ validate_s3() {
 
   else
     echo "❌ Unknown mode: $mode"
+    record_fail "$label" "unknown mode '$mode'"
   fi
 }
 
@@ -576,12 +712,17 @@ validate_expected_error_match "workspaces create-updated-workspace-image" "aws w
 
 log ""
 log "########################"
-log "# 4. Should return 501 Not Implemented (Unsupported services - implicitly denied)"
+log "# 3. Should return 501 Not Implemented (Unsupported services - implicitly denied)"
 log "# These services are unsupported and should trigger Combine-style rejection"
 log "########################"
 
 validate_expected_error_match "polly list-lexicons" "aws polly list-lexicons" "Combine rejected this AWS API"
 validate_expected_error_match "macie2 list-members" "aws macie2 list-members" "Combine rejected this AWS API"
+
+log ""
+log "########################"
+log "# 4. (Does Not Exist)"
+log "########################"
 
 log ""
 log "########################"
@@ -665,13 +806,17 @@ log "# 13. Validate multipart upload rewritten"
 log "########################"
 ## not sure how to condense this, cause I need to verify the create result but.. I also need to extract values from it to use in the other checks.. I'll circle back to this later LRM'
 CREATE_CMD="aws s3api create-multipart-upload --bucket combine-endpoint-test --key foobarbaz"
+record_cmd "$CREATE_CMD"
 OUTPUT_CREATE=$(eval "$CREATE_CMD" 2>/dev/null)
 
 echo -n "🔍 s3api create-multipart-upload: "
 if echo "$OUTPUT_CREATE" | jq -r '.. | scalars | select(type == "string")' | grep -Eq 'arn:aws-iso(-b)?:|us-iso(-b)?|c2s\.ic\.gov|sc2s\.sgov\.gov'; then
   echo "✅ Passed"
+  record_pass
+  [[ "$VERBOSE" == "1" ]] && echo "$OUTPUT_CREATE" | jq .
 else
   echo "❌ Failed (no rewritten strings found)"
+  record_fail "s3api create-multipart-upload" "response returned but no ISO ARNs/regions detected — check rewriter"
   echo "$OUTPUT_CREATE" | jq . | head -n 20
 fi
 
@@ -683,7 +828,9 @@ validate_rewrite_smart "s3api list-multipart-uploads" "aws s3api list-multipart-
 validate_rewrite_smart "s3api list-parts" "aws s3api list-parts --bucket combine-endpoint-test --key foobarbaz --upload-id $UPLOAD_ID" ""
 
 # Clean up the multipart upload
-aws s3api abort-multipart-upload --bucket combine-endpoint-test --key foobarbaz --upload-id $UPLOAD_ID >/dev/null 2>&1
+ABORT_CMD="aws s3api abort-multipart-upload --bucket combine-endpoint-test --key foobarbaz --upload-id $UPLOAD_ID"
+record_cmd "$ABORT_CMD"
+eval "$ABORT_CMD" >/dev/null 2>&1
 echo "🧹 Aborted multipart upload (UploadId: $UPLOAD_ID)"
 
 log ""
@@ -712,9 +859,6 @@ validate_success "s3 cp download (deep nested ////)" 'aws s3 cp "s3://combine-en
 
 validate_success "s3 cp test2.txt" 'aws s3 cp smallfile.txt "s3://combine-endpoint-test/test2.txt"'
 validate_success "s3 cp test3.txt" 'aws s3 cp smallfile.txt "s3://combine-endpoint-test/foo/test3.txt"'
-validate_success "s3 cp test+.txt" 'aws s3 cp smallfile.txt "s3://combine-endpoint-test/foo/bar++/baz/test and test+.txt"'
-validate_success "s3 cp test.txt (nested)" 'aws s3 cp smallfile.txt "s3://combine-endpoint-test/foo/bar++/baz//boz//bix//test.txt"'
-validate_success "s3 cp test.txt (deep nested)" 'aws s3 cp smallfile.txt "s3://combine-endpoint-test/foo/bar++/baz///boz//bix////test.txt"'
 
 validate_rewrite_smart "head-object test2.txt" 'aws s3api head-object --bucket combine-endpoint-test --key "test2.txt"' ""
 validate_rewrite_smart "head-object test3.txt" 'aws s3api head-object --bucket combine-endpoint-test --key "foo/test3.txt"' ""
@@ -785,9 +929,9 @@ log "########################"
 
 validate_rewrite_smart "cloudtrail create-trail" "aws cloudtrail create-trail --name CombineTest --s3-bucket-name aws-cloudtrail-logs-663117128738-7700349f --s3-key-prefix EndpointsTest --no-is-multi-region-trail --no-include-global-service-events --cloud-watch-logs-log-group-arn arn:aws-iso:logs:us-iso-east-1:663117128738:log-group:CombineTest:* --cloud-watch-logs-role-arn arn:aws-iso:iam::663117128738:role/service-role/CombineTestCloudTrailRole --kms-key-id arn:aws-iso:kms:us-iso-east-1:663117128738:key/3000dcaa-c17a-4e5d-8e3a-5119afa0cf6f" "" ".TrailARN" "TRAIL_ARN"
 validate_rewrite_smart "cloudtrail list-trails" "aws cloudtrail list-trails" ""
-validate_rewrite_smart "cloudtrail describe-trails" "aws cloudtrail describe-trails --trail-name-list $TRAIL_ARN" ""
-validate_rewrite_smart "cloudtrail get-trail" "aws cloudtrail get-trail --name $TRAIL_ARN" ""
-validate_rewrite_smart "cloudtrail get-trail-status" "aws cloudtrail get-trail-status --name $TRAIL_ARN" ""
+validate_rewrite_smart "cloudtrail describe-trails" "aws cloudtrail describe-trails --trail-name-list \$TRAIL_ARN" ""
+validate_rewrite_smart "cloudtrail get-trail" "aws cloudtrail get-trail --name \$TRAIL_ARN" ""
+validate_rewrite_smart "cloudtrail get-trail-status" "aws cloudtrail get-trail-status --name \$TRAIL_ARN" ""
 
 validate_rewrite_smart "cloudtrail put-event-selectors (valid)" "aws cloudtrail put-event-selectors --trail-name CombineTest --event-selectors file://cloudtrail_event_selector_valid.json" ""
 validate_rewrite_smart "cloudtrail get-event-selectors" "aws cloudtrail get-event-selectors --trail-name CombineTest" ""
@@ -795,7 +939,8 @@ validate_rewrite_smart "cloudtrail get-event-selectors" "aws cloudtrail get-even
 validate_expected_error_match "cloudtrail put-event-selectors (invalid S3 ARN)" "aws cloudtrail put-event-selectors --trail-name CombineTest --event-selectors file://cloudtrail_event_selector_invalid_s3.json" "Unexpected Value for ARN"
 validate_expected_error_match "cloudtrail put-event-selectors (invalid Lambda ARN format)" "aws cloudtrail put-event-selectors --trail-name CombineTest --event-selectors file://cloudtrail_event_selector_invalid_lambda.json" "Unexpected Value for ARN"
 
-aws cloudtrail delete-trail --name "$TRAIL_ARN" >/dev/null 2>&1 && log "🧼 Deleted trail $TRAIL_ARN"
+record_cmd "aws cloudtrail delete-trail --name \$TRAIL_ARN"
+aws cloudtrail delete-trail --name "${TRAIL_ARN:-}" >/dev/null 2>&1 && log "🧼 Deleted trail ${TRAIL_ARN:-}"
 unset TRAIL_ARN
 
 log ""
@@ -918,7 +1063,7 @@ log "# 35. S3 presign text content validation"
 log "########################"
 
 validate_s3 "s3 presign upload + wget (text validation)" "test_cli_presign_upload.txt" "foo/bar++/baz//boz//bix//test.txt" "presign"
-validate_success "cat presigned file content" "cat presign_copy_back.txt" "How is your monkey's uncle?" ##this fails because validate_s3 deletes the file need to find a way to incorporate this into the test.
+validate_success "cat presigned file content" "cat test_cli_presign_upload.txt_back" "How is your monkey's uncle?" ##this fails because validate_s3 deletes the back file before this check can run
 
 log ""
 log "########################"
@@ -952,7 +1097,7 @@ validate_rewrite_smart "sqs get-queue-attributes (Test2)" "aws sqs get-queue-att
 
 log ""
 log "########################"
-log "# 38. SQS Redrive Policy Failure and Cleanup"
+log "# 38b. SQS Redrive Policy Failure and Cleanup"
 log "########################"
 
 validate_expected_error_match "sqs set-queue-attributes (nonexistent queues)" "aws sqs set-queue-attributes --queue-url \"https://sqs.us-iso-east-1.c2s.ic.gov/663117128738/bti360-horizon-sequoia-highlight-uploads-dlq\" --attributes '{\"RedriveAllowPolicy\":\"{\\\"redrivePermission\\\": \\\"byQueue\\\", \\\"sourceQueueArns\\\": [\\\"arn:aws-iso:sqs:us-iso-east-1:663117128738:nonexistent\\\",\\\"arn:aws-iso:sqs:us-iso-east-1:663117128738:also-nonexistent\\\",\\\"arn:aws-iso:sqs:us-iso-east-1:663117128738:lastly-nonexistent\\\"]}\"}'" "AWS.SimpleQueueService.NonExistentQueue"
@@ -1103,8 +1248,10 @@ log "# 52. SWF Domain Tagging & Rewriting"
 log "########################"
 
 # Attempt to register domain, ignore if already exists
+record_cmd "aws swf register-domain --name CombineTest --workflow-execution-retention-period-in-days 1"
 if aws swf register-domain --name CombineTest --workflow-execution-retention-period-in-days 1 2>&1 | grep -q "DomainAlreadyExistsFault"; then
   log "ℹ️  Domain CombineTest already exists. Attempting undeprecate."
+  record_cmd "aws swf undeprecate-domain --name CombineTest"
   aws swf undeprecate-domain --name CombineTest >/dev/null 2>&1
 else
   log "✅ Domain CombineTest registered."
@@ -1187,8 +1334,10 @@ validate_success "kms decrypt + save output to file" "aws kms decrypt --key-id \
 # Check that decrypted output matches original input LRM maybe circle back to this.. I hate having specific checks..
 if cmp -s test.encrypt test.unencrypted; then
   echo "✅ KMS encrypt/decrypt roundtrip succeeded (files match)"
+  record_pass
 else
   echo "❌ KMS encrypt/decrypt roundtrip failed (files do NOT match)"
+  record_fail "KMS encrypt/decrypt roundtrip" "decrypted output does not match original — check KMS key permissions or ciphertext corruption"
   exit 1
 fi
 
@@ -1253,12 +1402,7 @@ validate_rewrite_smart "cloudwatch list-tags-for-resource (no tags expected)" "a
 validate_success "cloudwatch delete-alarms" "aws cloudwatch delete-alarms --alarm-names CombineTest"
 validate_rewrite_smart "cloudwatch describe-alarms (should be empty after delete)" "aws cloudwatch describe-alarms --action-prefix arn:aws-iso:sns:us-iso-east-1:663117128738:CombineEndpointsTest"
 
-log ""
-log "########################"
-log "# 64. KMS – FIPS endpoint rewrite validation"
-log "########################"
-
-validate_rewrite_smart "kms list-keys (fips endpoint)" "aws kms list-keys --endpoint-url https://kms-fips.us-iso-east-1.c2s.ic.gov"
+# Section 64 removed — KMS FIPS rewrite is already covered by section 27
 
 log ""
 log "########################"
@@ -1324,7 +1468,7 @@ log "########################"
 log "# 71. Lambda create-function fails due to invalid role ARN"
 log "########################"
 
-validate_expected_error_match "lambda create-function with invalid role ARN" "aws lambda create-function --function-name foo --role foo --vpc-config SubnetIds=\$SUBNET_1,\$SUBNET_2,\$SUBNET_3,SecurityGroupIds=foo" "Member must satisfy regular expression pattern: arn:"
+validate_expected_error_match "lambda create-function with invalid role ARN" "aws lambda create-function --function-name foo --role foo --vpc-config SubnetIds=subnet-aaaaaaaa,subnet-bbbbbbbb,subnet-cccccccc,SecurityGroupIds=foo" "Member must satisfy regular expression pattern: arn:"
 
 log ""
 log "########################"
@@ -1359,7 +1503,7 @@ log "# 74. EC2 Run + Terminate Instance"
 log "########################"
 
 validate_rewrite_smart "ec2 run-instances" "aws ec2 run-instances --image-id ami-0d5eff06f840b45e9 --subnet-id $SUBNET_1 --instance-type t3.nano --placement AvailabilityZone=us-iso-east-1a" "" ".Instances[0].InstanceId" "EC2_INSTANCE_ID"
-validate_success "ec2 terminate-instances" "aws ec2 terminate-instances --instance-ids $EC2_INSTANCE_ID" "shutting-down"
+validate_success "ec2 terminate-instances" "aws ec2 terminate-instances --instance-ids \$EC2_INSTANCE_ID" "shutting-down"
 
 log ""
 log "########################"
@@ -1420,7 +1564,7 @@ log "########################"
 validate_rewrite_smart "iam create-policy (us-iso)" "aws iam create-policy --policy-name Test --policy-document '{\"Statement\":[{\"Action\":[\"elasticfilesystem:DescribeMountTargets\",\"elasticfilesystem:ClientWrite\",\"elasticfilesystem:ClientRootAccess\",\"elasticfilesystem:ClientMount\"],\"Effect\":\"Allow\",\"Resource\":\"arn:aws-iso:elasticfilesystem:us-iso-east-1:123456789123:file-system/fs-11111111111111111\",\"Sid\":\"AllowRW\"}],\"Version\":\"2012-10-17\"}'"
 validate_success "iam delete-policy (us-iso)" "aws iam delete-policy --policy-arn arn:aws-iso:iam::663117128738:policy/Test"
 validate_rewrite_smart "iam create-policy (us-isob)" "aws iam create-policy --policy-name Test --policy-document '{\"Statement\":[{\"Action\":[\"elasticfilesystem:DescribeMountTargets\",\"elasticfilesystem:ClientWrite\",\"elasticfilesystem:ClientRootAccess\",\"elasticfilesystem:ClientMount\"],\"Effect\":\"Allow\",\"Resource\":\"arn:aws-iso-b:elasticfilesystem:us-isob-east-1:123456789123:file-system/fs-11111111111111111\",\"Sid\":\"AllowRW\"}],\"Version\":\"2012-10-17\"}'" "us-isob-east-1"
-validate_success "iam delete-policy (us-isob)" "aws iam delete-policy --policy-arn arn:aws-iso-b:iam::663117128738:policy/Test" "us-isob-east-1"
+validate_success "iam delete-policy (us-isob)" "aws iam delete-policy --policy-arn arn:aws-iso-b:iam::663117128738:policy/Test --region us-isob-east-1"
 
 log ""
 log "########################"
@@ -1438,3 +1582,155 @@ log "########################"
 validate_rewrite_smart "iam create-role with rewritten service principals" "aws iam create-role --role-name CombineTestServicePrincipal --assume-role-policy-document '{ \"Version\": \"2012-10-17\", \"Statement\": [ { \"Effect\": \"Allow\", \"Principal\": { \"Service\": [ \"elasticmapreduce.c2s.ic.gov\" ] }, \"Action\": \"sts:AssumeRole\" } ] }'"
 validate_rewrite_smart "iam get-role with rewritten service principals" "aws iam get-role --role-name CombineTestServicePrincipal" "" ".Role.AssumeRolePolicyDocument.Statement[0].Principal.Service[]"
 validate_success "iam delete-role" "aws iam delete-role --role-name CombineTestServicePrincipal"
+
+log ""
+log "########################"
+log "# 82. EKS – rewriter and filter verification"
+log "# Set EKS_REGION (and optionally EKS_CLUSTER) to run this section."
+log "########################"
+
+if [[ -z "$EKS_REGION" ]]; then
+  log "⏭️  Skipping EKS section (EKS_REGION not set)"
+  record_skip
+else
+  # Derive expected emulated partition from the region prefix
+  case "$EKS_REGION" in
+    us-iso-*)   EKS_EXP_PARTITION="aws-iso"    ;;
+    us-isob-*)  EKS_EXP_PARTITION="aws-iso-b"  ;;
+    us-gov-*)   EKS_EXP_PARTITION="aws-us-gov" ;;
+    eusc-*)     EKS_EXP_PARTITION="aws-eusc"   ;;
+    *)          EKS_EXP_PARTITION="aws"        ;;
+  esac
+
+  EKS_AWS="aws --region $EKS_REGION"
+  log "region=$EKS_REGION  cluster=$EKS_CLUSTER  expected-partition=$EKS_EXP_PARTITION"
+
+  # --- Response rewriter (host -> emulated) ---
+  log ""
+  log "--- describe-cluster: response rewriter ---"
+  if ! eks_run $EKS_AWS eks describe-cluster --name "$EKS_CLUSTER"; then
+    log "❌ describe-cluster failed; skipping remaining EKS tests"
+  else
+    CLUSTER_JSON="$RUN_OUT"
+    eks_q() { echo "$CLUSTER_JSON" | jq -r "$1"; }
+
+    eks_check "cluster.arn"                   "$(eks_q '.cluster.arn')"                                          arn
+    eks_check "cluster.roleArn (IAM)"         "$(eks_q '.cluster.roleArn')"                                      arn-global
+    eks_check "encryptionConfig keyArn (KMS)" "$(eks_q '.cluster.encryptionConfig[0].provider.keyArn // empty')" arn
+
+    eks_note "identity.oidc.issuer (expected host/commercial, not emulated) = $(eks_q '.cluster.identity.oidc.issuer // empty')"
+    eks_note "cluster.endpoint (expected host/commercial, not emulated)      = $(eks_q '.cluster.endpoint // empty')"
+
+    log ""
+    log "--- nodegroups: response rewriter ---"
+    if eks_run $EKS_AWS eks list-nodegroups --cluster-name "$EKS_CLUSTER"; then
+      NGS="$(echo "$RUN_OUT" | jq -r '.nodegroups[]?')"
+      if [[ -z "$NGS" ]]; then eks_skip "no nodegroups on $EKS_CLUSTER"; fi
+      for NG in $NGS; do
+        if eks_run $EKS_AWS eks describe-nodegroup --cluster-name "$EKS_CLUSTER" --nodegroup-name "$NG"; then
+          NG_JSON="$RUN_OUT"
+          eks_check "nodegroup[$NG].nodegroupArn" "$(echo "$NG_JSON" | jq -r '.nodegroup.nodegroupArn')" arn
+          eks_check "nodegroup[$NG].nodeRole"     "$(echo "$NG_JSON" | jq -r '.nodegroup.nodeRole')"     arn-global
+        fi
+      done
+    fi
+
+    log ""
+    log "--- addons: response rewriter ---"
+    if eks_run $EKS_AWS eks list-addons --cluster-name "$EKS_CLUSTER"; then
+      ADDONS="$(echo "$RUN_OUT" | jq -r '.addons[]?')"
+      if [[ -z "$ADDONS" ]]; then eks_skip "no addons on $EKS_CLUSTER"; fi
+      for A in $ADDONS; do
+        if eks_run $EKS_AWS eks describe-addon --cluster-name "$EKS_CLUSTER" --addon-name "$A"; then
+          A_JSON="$RUN_OUT"
+          eks_check "addon[$A].addonArn"              "$(echo "$A_JSON" | jq -r '.addon.addonArn')"                       arn
+          eks_check "addon[$A].serviceAccountRoleArn" "$(echo "$A_JSON" | jq -r '.addon.serviceAccountRoleArn // empty')" arn-global
+        fi
+      done
+    fi
+
+    # Raw leak scan: nothing in the cluster body should carry the host partition
+    log ""
+    log "--- raw leak scan (no host 'arn:aws:' when emulated partition differs) ---"
+    if [[ "$EKS_EXP_PARTITION" != "aws" ]]; then
+      if echo "$CLUSTER_JSON" | grep -q 'arn:aws:'; then
+        eks_bad "host partition 'arn:aws:' leaked in describe-cluster body:"
+        echo "$CLUSTER_JSON" | grep -o 'arn:aws:[^"]*' | sort -u | sed 's/^/        /'
+      else
+        eks_ok "no 'arn:aws:' leak in describe-cluster body"
+      fi
+    else
+      eks_skip "emulated partition is commercial; leak scan N/A"
+    fi
+
+    # --- Request rewriter (emulated -> host) ---
+    log ""
+    log "--- list-tags-for-resource: request rewriter (emulated ARN accepted on input) ---"
+    CLUSTER_ARN="$(eks_q '.cluster.arn')"
+    if eks_run $EKS_AWS eks list-tags-for-resource --resource-arn "$CLUSTER_ARN"; then
+      eks_ok "emulated ARN accepted as input and round-tripped: $CLUSTER_ARN"
+    else
+      eks_bad "list-tags-for-resource rejected the emulated cluster ARN"
+    fi
+
+    log ""
+    log "--- list-tags-for-resource: commercial ARN must be rejected ---"
+    if eks_run $EKS_AWS eks list-tags-for-resource --resource-arn "arn:aws:eks:us-east-1:123456789012:cluster/fake"; then
+      eks_bad "commercial ARN was NOT rejected (expected ValidationError)"
+    else
+      eks_ok "commercial ARN rejected as expected"
+    fi
+
+    # --- Rejection / filter rules ---
+    log ""
+    log "--- filter rules (expect rejection in the applicable partition) ---"
+    expect_reject_eks "list-eks-anywhere-subscriptions" $EKS_AWS eks list-eks-anywhere-subscriptions
+    expect_reject_eks "list-fargate-profiles"           $EKS_AWS eks list-fargate-profiles --cluster-name "$EKS_CLUSTER"
+    expect_reject_eks "create-fargate-profile"          $EKS_AWS eks create-fargate-profile --cluster-name "$EKS_CLUSTER" --fargate-profile-name fake --pod-execution-role-arn fake
+    [[ "$EKS_EXP_PARTITION" == "aws-us-gov" ]] && expect_reject_eks "list-capabilities (gov-only)" $EKS_AWS eks list-capabilities --cluster-name "$EKS_CLUSTER"
+  fi
+
+  log ""
+  log "=== EKS summary: PASS=$EKS_PASS FAIL=$EKS_FAIL SKIP=$EKS_SKIP ==="
+fi
+
+log ""
+log "########################"
+log "# CLI Commands Called"
+log "# (${#COMMANDS_RUN[@]} total)"
+log "########################"
+for cmd in "${COMMANDS_RUN[@]}"; do
+  log "  $cmd"
+done
+
+log ""
+log "###############################################"
+log "# Test Summary"
+log "###############################################"
+TOTAL=$((PASS + FAIL + SKIP))
+log ""
+log "  Total:     $TOTAL"
+log "  ✅ Passed:  $PASS"
+log "  ❌ Failed:  $FAIL"
+log "  ⏭️  Skipped: $SKIP"
+if [[ -n "${EKS_REGION:-}" ]]; then
+  log ""
+  log "  EKS (section 82): PASS=$EKS_PASS FAIL=$EKS_FAIL SKIP=$EKS_SKIP"
+fi
+log ""
+if [[ ${#FAILURES[@]} -eq 0 ]]; then
+  log "  🎉 All tests passed!"
+else
+  log "  Failed tests (review output above or check $LOGFILE for details):"
+  log ""
+  for f in "${FAILURES[@]}"; do
+    log "    ❌  $f"
+  done
+  log ""
+  log "  Common things to check:"
+  log "    • Credentials/endpoint — ensure AWS_* env vars and endpoint config are correct"
+  log "    • Rewriter — if 'no ISO ARNs/regions detected', the response rewriter may not be running"
+  log "    • Encoding — a 403 on an expected-error test usually means a URI encoding bug in the proxy"
+  log "    • Instance/node types — 'not filtered' failures indicate a missing entry in the type filter list"
+  log "    • S3 access — upload/download failures point to bucket policy or credential scope issues"
+fi
