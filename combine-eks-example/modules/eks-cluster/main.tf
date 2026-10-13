@@ -76,11 +76,17 @@ module "managed_node_group" {
   key_name = var.node_group_remote_access_key
 
   platform                = "linux"
+  ami_type                = var.node_group_ami_type
   pre_bootstrap_user_data = <<-EOT
           #!/bin/bash
           set -ex
           ${local.combine_bootstrap_script_addition}
           EOT
+
+  ami_id                     = var.node_group_ami_id
+  enable_bootstrap_user_data = var.node_group_ami_id != ""
+  cluster_endpoint           = module.eks.cluster_endpoint
+  cluster_auth_base64        = module.eks.cluster_certificate_authority_data
 
   create_launch_template                 = true
   use_custom_launch_template             = true

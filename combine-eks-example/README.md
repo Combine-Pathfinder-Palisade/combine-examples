@@ -60,6 +60,15 @@ The terraform modules live in the `/modules` directory. You will not have to tou
 | plugins                              | Deploys a configurable set of EKS plugins.                                                         |
 | test-helm-chart                      | A sample Helm chart for testing cluster deployments.                                               |
 
+----------
+### EKS node bootstrap through Combine
+
+The [`eks-cluster`](modules/eks-cluster/main.tf) module can bootstrap AL2023 managed nodes through Combine's rewritten Kubernetes API endpoint when `EnableAirgapAccessEKS=false`. Set `node_group_ami_id` to an EKS AL2023 AMI for your cluster's Kubernetes version and mapped AWS region. Keep `node_group_ami_type` matched to that AMI; its default is `AL2023_x86_64_STANDARD`.
+
+Pinning the AMI in the node group's launch template prevents EKS from appending its own bootstrap configuration, which contains the commercial endpoint. When an AMI is pinned, the module writes the emulated endpoint and CA bundle into the node’s `NodeConfig`, allowing the node to reach the EKS control plane through Combine.”
+
+
+
 
 ----------
 ### Before You Provision
@@ -171,7 +180,7 @@ kube-system       Active   23h
 
 -----------
 ### Caveats/Notes
-- If a customer wants to pull docker images directly through combine, they will need to add the combine ca chain to their nodes; a temporary workaround would be to whitelist the public ecr endpoint in Combine's Firewall. This is already done in this repository via the `pre_bootstrap_user_data - see [this file](modules/eks-cluster/main.tf#L78).
+- If a customer wants to pull docker images directly through combine, they will need to add the combine ca chain to their nodes. The `eks-cluster` module passes the CA bundle to `nodeadm` for the Kubernetes API connection.
 
 - Ensure that you are using the `aws` cli version 2, as version 1 will fail with a cryptic `Unauthorized` error. The bastion bootstrap will install version 2.
 

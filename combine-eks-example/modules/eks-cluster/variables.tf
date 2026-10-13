@@ -34,10 +34,15 @@ variable "is_combine_env" {
   type        = bool
   default     = true
 }
+variable "node_group_ami_id" {
+  description = "AMI the node group's Launch Template pins."
+  type        = string
+  default     = ""
+}
 variable "node_group_ami_type" {
   description = "The ami type that will be used to deploy the Amazon EKS cluster's node groups."
   type        = string
-  default     = "AL2_x86_64"
+  default     = "AL2023_x86_64_STANDARD"
 }
 variable "node_group_remote_access_key" {
   description = "The EC2 Key name to add to the instances within the node group."
