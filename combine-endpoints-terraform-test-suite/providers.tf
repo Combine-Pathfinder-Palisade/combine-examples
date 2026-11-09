@@ -19,6 +19,12 @@ locals {
   access_key       = var.access_key
   secret_key       = var.secret_key
   custom_ca_bundle = var.custom_ca_bundle
+
+  # NOTE: Lets anything a run leaves behind be found by tag, even if its state file is lost.
+  run_tags = {
+    "combine-test-suite" = "combine-endpoints-terraform-test-suite"
+    "combine-test-run"   = var.run_id
+  }
 }
 
 # access key and secret key can be sourced from the CAP api, or sourced via
@@ -29,6 +35,10 @@ provider "aws" {
   secret_key              = local.secret_key
   skip_metadata_api_check = true
   custom_ca_bundle        = local.custom_ca_bundle
+
+  default_tags {
+    tags = local.run_tags
+  }
 }
 
 provider "aws" {
@@ -38,4 +48,8 @@ provider "aws" {
   secret_key              = local.secret_key
   custom_ca_bundle        = local.custom_ca_bundle
   skip_metadata_api_check = true
+
+  default_tags {
+    tags = local.run_tags
+  }
 }
