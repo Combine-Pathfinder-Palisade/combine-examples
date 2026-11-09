@@ -112,3 +112,11 @@ output "kinesis_stream_arn" {
 output "kinesis_stream_name" {
   value = aws_kinesis_stream.combine_test.name
 }
+
+output "rds_subnet_group_name" {
+  value = aws_db_subnet_group.tf_combine_endpoints_subnet_group.name
+}
+
+output "vpc_id" {
+  value = var.vpc_id
+}

@@ -398,8 +398,9 @@ resource "aws_db_instance" "tf_combine_instance" {
   identifier           = "tf-combine-endpoint-test-instance${local.suffix}"
   instance_class       = "db.t3.micro"
   engine               = "mysql"
-  engine_version       = "8.0.40" #seems engine needs to be specified in terraform or it will send a request with empty version
-  allocated_storage    = 8
+  # NOTE: Must be in both the emulated Partition's supported RDS versions (cloud-partitions.json) and the host Region's available versions.
+  engine_version       = "8.4.8" #seems engine needs to be specified in terraform or it will send a request with empty version
+  allocated_storage    = 20
   username             = "combineadmin"
   password             = "Combine1275317"
   db_subnet_group_name = aws_db_subnet_group.tf_combine_endpoints_subnet_group.name

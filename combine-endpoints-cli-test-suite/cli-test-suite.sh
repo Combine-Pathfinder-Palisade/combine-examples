@@ -35,12 +35,21 @@ function log() {
 }
 
 #############################
-# GET VPC ID need a better way to do this..
-# Maybe we can have some sort of external file with the variables?
-# Something we only edit once and then I can reference in some way that doesn't require multiple changes
+# Terraform-managed resources
+#
+# combine-test-setup.sh exports each Terraform output as TF_<OUTPUT_NAME>. Tests that need one of these
+# resources are skipped (not failed) when it is missing, e.g. because the Terraform apply failed.
+# Running locally without Terraform: export the variables yourself, or let those tests skip.
 #############################
 
-export VPC_ID=vpc-01e95d9106c2c1ef6
+export TF_DYNAMODB_TABLE_NAME="${TF_DYNAMODB_TABLE_NAME:-}"
+export TF_KINESIS_STREAM_NAME="${TF_KINESIS_STREAM_NAME:-}"
+export TF_LAMBDA_FUNCTION_NAME="${TF_LAMBDA_FUNCTION_NAME:-}"
+export TF_LAMBDA_FUNCTION_ARN="${TF_LAMBDA_FUNCTION_ARN:-}"
+export TF_RDS_SUBNET_GROUP_NAME="${TF_RDS_SUBNET_GROUP_NAME:-}"
+
+# NOTE: Defaults to the Master VPC so local runs keep working; the workflow supplies the environment's VPC.
+export VPC_ID="${TF_VPC_ID:-vpc-01e95d9106c2c1ef6}"
 SUBNET_1=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --query 'Subnets[0].SubnetId' --output text 2>/dev/null || true)
 UNSUPPORTED_INSTANCE_TYPE="db.r7i.large"
 UNSUPPORTED_EMR_TYPE_1="m7i.xlarge"
@@ -79,6 +88,43 @@ record_fail() {
   local hint="${2:-}"
   FAIL=$((FAIL+1))
   FAILURES+=("${label}${hint:+ — ${hint}}")
+}
+
+# require_tf <label> <VAR>...: returns 0 if every Terraform variable is set, otherwise reports the test as skipped.
+# Usage: require_tf "my test" TF_FOO && validate_success "my test" "aws ... \$TF_FOO"
+require_tf() {
+  local label="$1"; shift
+  local var
+  for var in "$@"; do
+    if [[ -z "${!var:-}" ]]; then
+      echo "🔍 ${label}: ⏭️ Skipped (Terraform resource unavailable: ${var})"
+      record_skip
+      return 1
+    fi
+  done
+  return 0
+}
+
+# wait_rds_deleted <instance|cluster> <identifier>: not a test. Blocks until a database this suite created in the
+# Terraform DB Subnet Group is gone, otherwise the Terraform destroy of that Subnet Group fails while it is still deleting.
+wait_rds_deleted() {
+  local kind="$1"
+  local id="$2"
+  local status
+
+  if [[ "$kind" == "instance" ]]; then
+    status=$(aws rds describe-db-instances --db-instance-identifier "$id" --query 'DBInstances[0].DBInstanceStatus' --output text 2>/dev/null) || return 0
+  else
+    status=$(aws rds describe-db-clusters --db-cluster-identifier "$id" --query 'DBClusters[0].Status' --output text 2>/dev/null) || return 0
+  fi
+
+  if [[ "$status" != "deleting" ]]; then
+    log "⚠️  RDS $kind $id is '$status', not deleting — Terraform cleanup of its Subnet Group may need a later sweep"
+    return 0
+  fi
+
+  log "⏳ Waiting for RDS $kind $id to finish deleting..."
+  aws rds wait "db-${kind}-deleted" "--db-${kind}-identifier" "$id" 2>/dev/null || log "⚠️  Timed out waiting for RDS $kind $id to delete"
 }
 
 #############################
@@ -949,16 +995,16 @@ log "# 24. Validate values are rewritten in response (DynamoDB)"
 log "########################"
 
 
-validate_rewrite_smart "dynamodb describe-table" "aws dynamodb describe-table --table-name tf-combine-endpoints-test-gt" ""
-validate_rewrite_smart "dynamodb create-backup" "aws dynamodb create-backup --table-name tf-combine-endpoints-test-gt --backup-name Test1" "" ".BackupDetails.BackupArn" "DDB_BACKUP_ARN"
-validate_rewrite_smart "dynamodb describe-backup" "aws dynamodb describe-backup --backup-arn \$DDB_BACKUP_ARN" ""
-validate_rewrite_smart "dynamodb list-backups" "aws dynamodb list-backups --table-name tf-combine-endpoints-test-gt" ""
-validate_rewrite_smart "dynamodb delete-backup" "aws dynamodb delete-backup --backup-arn \$DDB_BACKUP_ARN" ""
-validate_rewrite_smart "dynamodbstreams list-streams" "aws dynamodbstreams list-streams --table-name tf-combine-endpoints-test-gt --region us-iso-east-1" "" ".Streams[0].StreamArn" "STREAM_ARN"
-validate_rewrite_smart "dynamodbstreams describe-stream" "aws dynamodbstreams describe-stream --stream-arn \$STREAM_ARN --region us-iso-east-1" "" ".StreamDescription.Shards[0].ShardId" "SHARD_ID"
-validate_rewrite_smart "dynamodbstreams get-shard-iterator" "aws dynamodbstreams get-shard-iterator --stream-arn \$STREAM_ARN --shard-id \$SHARD_ID --shard-iterator-type LATEST --region us-iso-east-1" "" ".ShardIterator" "SHARD_ITERATOR_ID"
-validate_rewrite_smart "dynamodbstreams get-records" "aws dynamodbstreams get-records --shard-iterator \$SHARD_ITERATOR_ID --region us-iso-east-1" "" ".NextShardIterator" "NEXT_SHARD_ITERATOR_ID"
-validate_rewrite_smart "dynamodbstreams get-records (next iterator)" "aws dynamodbstreams get-records --shard-iterator \$NEXT_SHARD_ITERATOR_ID --region us-iso-east-1" ""
+require_tf "dynamodb describe-table" TF_DYNAMODB_TABLE_NAME && validate_rewrite_smart "dynamodb describe-table" "aws dynamodb describe-table --table-name \$TF_DYNAMODB_TABLE_NAME" ""
+require_tf "dynamodb create-backup" TF_DYNAMODB_TABLE_NAME && validate_rewrite_smart "dynamodb create-backup" "aws dynamodb create-backup --table-name \$TF_DYNAMODB_TABLE_NAME --backup-name Test1" "" ".BackupDetails.BackupArn" "DDB_BACKUP_ARN"
+require_tf "dynamodb describe-backup" TF_DYNAMODB_TABLE_NAME && validate_rewrite_smart "dynamodb describe-backup" "aws dynamodb describe-backup --backup-arn \$DDB_BACKUP_ARN" ""
+require_tf "dynamodb list-backups" TF_DYNAMODB_TABLE_NAME && validate_rewrite_smart "dynamodb list-backups" "aws dynamodb list-backups --table-name \$TF_DYNAMODB_TABLE_NAME" ""
+require_tf "dynamodb delete-backup" TF_DYNAMODB_TABLE_NAME && validate_rewrite_smart "dynamodb delete-backup" "aws dynamodb delete-backup --backup-arn \$DDB_BACKUP_ARN" ""
+require_tf "dynamodbstreams list-streams" TF_DYNAMODB_TABLE_NAME && validate_rewrite_smart "dynamodbstreams list-streams" "aws dynamodbstreams list-streams --table-name \$TF_DYNAMODB_TABLE_NAME --region us-iso-east-1" "" ".Streams[0].StreamArn" "STREAM_ARN"
+require_tf "dynamodbstreams describe-stream" TF_DYNAMODB_TABLE_NAME && validate_rewrite_smart "dynamodbstreams describe-stream" "aws dynamodbstreams describe-stream --stream-arn \$STREAM_ARN --region us-iso-east-1" "" ".StreamDescription.Shards[0].ShardId" "SHARD_ID"
+require_tf "dynamodbstreams get-shard-iterator" TF_DYNAMODB_TABLE_NAME && validate_rewrite_smart "dynamodbstreams get-shard-iterator" "aws dynamodbstreams get-shard-iterator --stream-arn \$STREAM_ARN --shard-id \$SHARD_ID --shard-iterator-type LATEST --region us-iso-east-1" "" ".ShardIterator" "SHARD_ITERATOR_ID"
+require_tf "dynamodbstreams get-records" TF_DYNAMODB_TABLE_NAME && validate_rewrite_smart "dynamodbstreams get-records" "aws dynamodbstreams get-records --shard-iterator \$SHARD_ITERATOR_ID --region us-iso-east-1" "" ".NextShardIterator" "NEXT_SHARD_ITERATOR_ID"
+require_tf "dynamodbstreams get-records (next iterator)" TF_DYNAMODB_TABLE_NAME && validate_rewrite_smart "dynamodbstreams get-records (next iterator)" "aws dynamodbstreams get-records --shard-iterator \$NEXT_SHARD_ITERATOR_ID --region us-iso-east-1" ""
 
 log ""
 log "########################"
@@ -1238,9 +1284,9 @@ log "########################"
 log "# 51. Kinesis Stream (Terraform-managed)"
 log "########################"
 
-validate_rewrite_smart "kinesis list-streams (TfCombineTest)" "aws kinesis list-streams" "" ".StreamSummaries[] | select(.StreamName==\"TfCombineTest\") | .StreamARN" "TF_KINESIS_ARN"
-validate_rewrite_smart "kinesis describe-stream" "aws kinesis describe-stream --stream-arn \$TF_KINESIS_ARN" "" ".StreamDescription.StreamStatus"
-validate_success "kinesis decrease-stream-retention" "aws kinesis decrease-stream-retention-period --stream-arn \$TF_KINESIS_ARN --retention-period-hours 24"
+require_tf "kinesis list-streams (Terraform stream)" TF_KINESIS_STREAM_NAME && validate_rewrite_smart "kinesis list-streams (Terraform stream)" "aws kinesis list-streams" "" ".StreamSummaries[] | select(.StreamName==\"$TF_KINESIS_STREAM_NAME\") | .StreamARN" "TF_KINESIS_ARN"
+require_tf "kinesis describe-stream" TF_KINESIS_STREAM_NAME && validate_rewrite_smart "kinesis describe-stream" "aws kinesis describe-stream --stream-arn \$TF_KINESIS_ARN" "" ".StreamDescription.StreamStatus"
+require_tf "kinesis decrease-stream-retention" TF_KINESIS_STREAM_NAME && validate_success "kinesis decrease-stream-retention" "aws kinesis decrease-stream-retention-period --stream-arn \$TF_KINESIS_ARN --retention-period-hours 24"
 
 log ""
 log "########################"
@@ -1271,22 +1317,27 @@ log "# 53. RDS Cluster + Instance End-to-End"
 log "########################"
 
 
-validate_rewrite_smart "create-db-instance 2" "aws rds create-db-instance --master-username combineadmin --master-user-password Combine1275317 --db-subnet-group-name tf-combine-endpoints-test-subnet-group --db-instance-identifier CombineEndpointTestInstance2 --db-instance-class db.t3.micro --allocated-storage 8 --engine mysql --availability-zone us-iso-east-1a"
-validate_rewrite_smart "create-db-cluster 2" "aws rds create-db-cluster --master-username combineadmin --master-user-password Combine1275317 --db-cluster-identifier CombineEndpointTestCluster2 --db-subnet-group-name tf-combine-endpoints-test-subnet-group --engine aurora-postgresql --availability-zones us-iso-east-1a us-iso-east-1b us-iso-east-1c"
+require_tf "create-db-instance 2" TF_RDS_SUBNET_GROUP_NAME && validate_rewrite_smart "create-db-instance 2" "aws rds create-db-instance --master-username combineadmin --master-user-password Combine1275317 --db-subnet-group-name \$TF_RDS_SUBNET_GROUP_NAME --db-instance-identifier CombineEndpointTestInstance2 --db-instance-class db.t3.micro --allocated-storage 8 --engine mysql --availability-zone us-iso-east-1a"
+require_tf "create-db-cluster 2" TF_RDS_SUBNET_GROUP_NAME && validate_rewrite_smart "create-db-cluster 2" "aws rds create-db-cluster --master-username combineadmin --master-user-password Combine1275317 --db-cluster-identifier CombineEndpointTestCluster2 --db-subnet-group-name \$TF_RDS_SUBNET_GROUP_NAME --engine aurora-postgresql --availability-zones us-iso-east-1a us-iso-east-1b us-iso-east-1c"
 validate_rewrite_smart "describe-db-instances" "aws rds describe-db-instances"
 validate_rewrite_smart "describe-db-clusters" "aws rds describe-db-clusters"
 validate_rewrite_smart "describe-db-subnet-groups" "aws rds describe-db-subnet-groups"
-validate_rewrite_smart "delete-db-instance 2" "aws rds delete-db-instance --skip-final-snapshot --db-instance-identifier CombineEndpointTestInstance2"
-validate_rewrite_smart "delete-db-cluster 2" "aws rds delete-db-cluster --skip-final-snapshot --db-cluster-identifier CombineEndpointTestCluster2"
+require_tf "delete-db-instance 2" TF_RDS_SUBNET_GROUP_NAME && validate_rewrite_smart "delete-db-instance 2" "aws rds delete-db-instance --skip-final-snapshot --db-instance-identifier CombineEndpointTestInstance2"
+require_tf "delete-db-cluster 2" TF_RDS_SUBNET_GROUP_NAME && validate_rewrite_smart "delete-db-cluster 2" "aws rds delete-db-cluster --skip-final-snapshot --db-cluster-identifier CombineEndpointTestCluster2"
+if [[ -n "$TF_RDS_SUBNET_GROUP_NAME" ]]; then
+  wait_rds_deleted instance CombineEndpointTestInstance2
+  wait_rds_deleted cluster CombineEndpointTestCluster2
+fi
 
 log ""
 log "########################"
 log "# 54. RDS instance type will fail due to instance type"
 log "########################"
 
-validate_expected_error_match "unsupported RDS instance type" "aws rds create-db-instance --master-username combineadmin --master-user-password Combine1275317 --db-subnet-group-name tf-combine-endpoints-test-subnet-group --db-instance-identifier CombineEndpointTestInstanceInvalid --db-instance-class \$UNSUPPORTED_INSTANCE_TYPE --allocated-storage 8 --engine mysql --availability-zone us-iso-east-1a" "Combine rejected this AWS API"
-validate_rewrite_smart "create-db-instance supported type" "aws rds create-db-instance --master-username combineadmin --master-user-password Combine1275317 --db-subnet-group-name tf-combine-endpoints-test-subnet-group --db-instance-identifier CombineEndpointTestInstance --db-instance-class db.m5.large --allocated-storage 8 --engine mysql --availability-zone us-iso-east-1a"
-validate_success "delete-db-instance supported type" "aws rds delete-db-instance --skip-final-snapshot --db-instance-identifier CombineEndpointTestInstance"
+require_tf "unsupported RDS instance type" TF_RDS_SUBNET_GROUP_NAME && validate_expected_error_match "unsupported RDS instance type" "aws rds create-db-instance --master-username combineadmin --master-user-password Combine1275317 --db-subnet-group-name \$TF_RDS_SUBNET_GROUP_NAME --db-instance-identifier CombineEndpointTestInstanceInvalid --db-instance-class \$UNSUPPORTED_INSTANCE_TYPE --allocated-storage 8 --engine mysql --availability-zone us-iso-east-1a" "Combine rejected this AWS API"
+require_tf "create-db-instance supported type" TF_RDS_SUBNET_GROUP_NAME && validate_rewrite_smart "create-db-instance supported type" "aws rds create-db-instance --master-username combineadmin --master-user-password Combine1275317 --db-subnet-group-name \$TF_RDS_SUBNET_GROUP_NAME --db-instance-identifier CombineEndpointTestInstance --db-instance-class db.m5.large --allocated-storage 8 --engine mysql --availability-zone us-iso-east-1a"
+require_tf "delete-db-instance supported type" TF_RDS_SUBNET_GROUP_NAME && validate_success "delete-db-instance supported type" "aws rds delete-db-instance --skip-final-snapshot --db-instance-identifier CombineEndpointTestInstance"
+[[ -n "$TF_RDS_SUBNET_GROUP_NAME" ]] && wait_rds_deleted instance CombineEndpointTestInstance
 
 log ""
 log "########################"
@@ -1487,13 +1538,13 @@ log "########################"
 validate_rewrite_smart "lambda create-code-signing-config" "aws lambda create-code-signing-config --allowed-publishers SigningProfileVersionArns=arn:aws-iso:iam::663117128738:user/test-combine-endpoints-user" "" ".CodeSigningConfig.CodeSigningConfigArn" "CODE_SIGNING_ARN"
 validate_rewrite_smart "lambda get-code-signing-config" "aws lambda get-code-signing-config --code-signing-config-arn \$CODE_SIGNING_ARN"
 validate_success "lambda delete-code-signing-config" "aws lambda delete-code-signing-config --code-signing-config-arn \$CODE_SIGNING_ARN"
-validate_rewrite_smart "lambda add-permission from S3 arn" "aws lambda add-permission --function-name TfTest --statement-id TestArn --action lambda:InvokeFunction --principal s3.amazonaws.com --source-arn arn:aws-iso:s3:::combine-devops-370881201289"
-validate_rewrite_smart "lambda add-permission from EMR" "aws lambda add-permission --function-name TfTest --statement-id TestServicePrincipal --action lambda:InvokeFunction --principal elasticmapreduce.c2s.ic.gov"
-validate_rewrite_smart "lambda add-permission from EC2 optional" "aws lambda add-permission --function-name TfTest --statement-id TestServicePrincipalOptional --action lambda:InvokeFunction --principal ec2.c2s.ic.gov"
-validate_rewrite_smart "lambda get-policy" "aws lambda get-policy --function-name TfTest"
-validate_rewrite_smart "lambda create-alias" "aws lambda create-alias --function-name arn:aws-iso:lambda:us-iso-east-1:663117128738:function:TfTest --name TestAlias --function-version \$LATEST"
-validate_rewrite_smart "lambda get-alias" "aws lambda get-alias --function-name arn:aws-iso:lambda:us-iso-east-1:663117128738:function:TfTest --name TestAlias"
-validate_success "lambda delete-alias" "aws lambda delete-alias --function-name arn:aws-iso:lambda:us-iso-east-1:663117128738:function:TfTest --name TestAlias"
+require_tf "lambda add-permission from S3 arn" TF_LAMBDA_FUNCTION_NAME && validate_rewrite_smart "lambda add-permission from S3 arn" "aws lambda add-permission --function-name \$TF_LAMBDA_FUNCTION_NAME --statement-id TestArn --action lambda:InvokeFunction --principal s3.amazonaws.com --source-arn arn:aws-iso:s3:::combine-devops-370881201289"
+require_tf "lambda add-permission from EMR" TF_LAMBDA_FUNCTION_NAME && validate_rewrite_smart "lambda add-permission from EMR" "aws lambda add-permission --function-name \$TF_LAMBDA_FUNCTION_NAME --statement-id TestServicePrincipal --action lambda:InvokeFunction --principal elasticmapreduce.c2s.ic.gov"
+require_tf "lambda add-permission from EC2 optional" TF_LAMBDA_FUNCTION_NAME && validate_rewrite_smart "lambda add-permission from EC2 optional" "aws lambda add-permission --function-name \$TF_LAMBDA_FUNCTION_NAME --statement-id TestServicePrincipalOptional --action lambda:InvokeFunction --principal ec2.c2s.ic.gov"
+require_tf "lambda get-policy" TF_LAMBDA_FUNCTION_NAME && validate_rewrite_smart "lambda get-policy" "aws lambda get-policy --function-name \$TF_LAMBDA_FUNCTION_NAME"
+require_tf "lambda create-alias" TF_LAMBDA_FUNCTION_ARN && validate_rewrite_smart "lambda create-alias" "aws lambda create-alias --function-name \$TF_LAMBDA_FUNCTION_ARN --name TestAlias --function-version '\$LATEST'"
+require_tf "lambda get-alias" TF_LAMBDA_FUNCTION_ARN && validate_rewrite_smart "lambda get-alias" "aws lambda get-alias --function-name \$TF_LAMBDA_FUNCTION_ARN --name TestAlias"
+require_tf "lambda delete-alias" TF_LAMBDA_FUNCTION_ARN && validate_success "lambda delete-alias" "aws lambda delete-alias --function-name \$TF_LAMBDA_FUNCTION_ARN --name TestAlias"
 validate_rewrite_smart "lambda list-functions ALL" "aws lambda list-functions --function-version ALL"
 validate_rewrite_smart "lambda list-functions master region" "aws lambda list-functions --master-region us-iso-east-1 --function-version ALL"
 
@@ -1734,3 +1785,6 @@ else
   log "    • Instance/node types — 'not filtered' failures indicate a missing entry in the type filter list"
   log "    • S3 access — upload/download failures point to bucket policy or credential scope issues"
 fi
+
+# NOTE: Skipped tests do not fail the run; any failed test does.
+[[ "$FAIL" -eq 0 ]] || exit 1
