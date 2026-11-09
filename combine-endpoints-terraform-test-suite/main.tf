@@ -326,6 +326,11 @@ resource "aws_kms_key" "tf_combine_key" {
   }
 }
 
+resource "aws_kms_alias" "tf_combine_key" {
+  name          = "alias/TfCombineTestKey${local.suffix}"
+  target_key_id = aws_kms_key.tf_combine_key.key_id
+}
+
 ## Commented because it seems terraform tries to check if the policy returned is the same policy sent and it seems that we're returning something different or slightly different so it stalls TF LRM
 
 resource "aws_kms_key_policy" "tf_combine_key_policy" {
