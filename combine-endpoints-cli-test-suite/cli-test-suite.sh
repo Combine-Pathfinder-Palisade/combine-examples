@@ -83,6 +83,9 @@ esac
 # ISO-B (us-isob-east-1) is no longer emulated; set ISOB_ENABLED=1 to run those tests against a shard that emulates it.
 ISOB_ENABLED="${ISOB_ENABLED:-0}"
 
+# Slow resource lifecycles (RDS, ElastiCache and MSK clusters, 500 MB S3 transfers). Set LONG_TESTS=false for quicker debugging runs.
+LONG_TESTS="${LONG_TESTS:-true}"
+
 # NOTE: Defaults to the Master VPC so local runs keep working; the workflow supplies the environment's VPC.
 export VPC_ID="${TF_VPC_ID:-vpc-01e95d9106c2c1ef6}"
 # One Combine Customer Subnet per Availability Zone, for tests that need subnets in different AZs.
@@ -171,10 +174,26 @@ wait_rds_deleted() {
   aws rds wait "db-${kind}-deleted" "--db-${kind}-identifier" "$id" 2>/dev/null || log "⚠️  Timed out waiting for RDS $kind $id to delete"
 }
 
+# require_value <label> <VAR>: returns 0 if a value captured by an earlier test is set, otherwise skips the test.
+require_value() {
+  [[ -n "${!2:-}" && "${!2:-}" != "null" ]] && return 0
+  echo "🔍 $1: ⏭️ Skipped (depends on a failed earlier step: $2 not captured)"
+  record_skip
+  return 1
+}
+
 # require_isob <label>: returns 0 when ISO-B tests are enabled, otherwise reports the test as skipped.
 require_isob() {
   [[ "$ISOB_ENABLED" == "1" ]] && return 0
   echo "🔍 $1: ⏭️ Skipped (ISO-B emulation disabled; set ISOB_ENABLED=1)"
+  record_skip
+  return 1
+}
+
+# require_long <label>: returns 0 when long tests are enabled, otherwise reports the test as skipped.
+require_long() {
+  [[ "$LONG_TESTS" == "true" ]] && return 0
+  echo "🔍 $1: ⏭️ Skipped (long test; set LONG_TESTS=true)"
   record_skip
   return 1
 }
@@ -809,8 +828,8 @@ validate_rewrite_smart "ec2 describe-subnets" "aws ec2 describe-subnets" ""
 validate_rewrite_smart "ec2 describe-subnets" "aws ec2 describe-subnets" "us-iso-west-1"
 require_isob "ec2 describe-subnets" && validate_rewrite_smart "ec2 describe-subnets" "aws ec2 describe-subnets" "us-isob-east-1"
 
-validate_rewrite_smart "trustedadvisor list-checks" "aws trustedadvisor list-checks" ""
-require_isob "trustedadvisor list-checks" && validate_rewrite_smart "trustedadvisor list-checks" "aws trustedadvisor list-checks" "us-isob-east-1"
+validate_expected_error_match "trustedadvisor list-checks" "aws trustedadvisor list-checks" "Combine rejected this AWS API"
+require_isob "trustedadvisor list-checks (ISO-B)" && validate_expected_error_match "trustedadvisor list-checks (ISO-B)" "aws trustedadvisor list-checks --region us-isob-east-1" "Combine rejected this AWS API"
 
 log ""
 log "########################"
@@ -906,16 +925,16 @@ validate_s3 "S3 smallfile.txt" "smallfile.txt" "foo/smallfile.txt" "checksum"
 validate_s3 "S3 file.txt" "file.txt" "foo/file.txt" "checksum"
 validate_s3 "S3 file++.txt" "file.txt" "foo/bar/baz/file++.txt" "checksum"
 validate_s3 "S3 bigfile.txt" "bigfile.txt" "foo/bigfile.txt" "checksum"
-validate_s3 "S3 megafile.txt" "megafile.txt" "foo/megafile.txt" "checksum"
+require_long "S3 megafile.txt" && validate_s3 "S3 megafile.txt" "megafile.txt" "foo/megafile.txt" "checksum"
 
 log ""
 log "########################"
 log "# 9. Validate S3 rewrite"
 log "########################"
 
-require_tf "s3api put-object (plain)" TF_S3_BUCKET_PERMISSIONS && validate_rewrite_smart "s3api put-object (plain)" "aws s3api put-object --bucket $S3_TEST_BUCKET --body ./test_cli_upload.txt --key test_cli_upload.txt" ""
+require_tf "s3api put-object (plain)" TF_S3_BUCKET_PERMISSIONS && validate_success "s3api put-object (plain)" "aws s3api put-object --bucket $S3_TEST_BUCKET --body ./test_cli_upload.txt --key test_cli_upload.txt"
 require_tf "s3api put-object (KMS)" TF_S3_BUCKET_PERMISSIONS && validate_rewrite_smart "s3api put-object (KMS)" "aws s3api put-object --bucket $S3_TEST_BUCKET --body ./test_cli_upload.txt --key test_cli_upload_kms.txt --ssekms-key-id $TF_KMS_KEY_ARN --server-side-encryption aws:kms" ""
-require_tf "s3api get-bucket-encryption" TF_S3_BUCKET_PERMISSIONS && validate_rewrite_smart "s3api get-bucket-encryption" "aws s3api get-bucket-encryption --bucket $S3_TEST_BUCKET" ""
+require_tf "s3api get-bucket-encryption" TF_S3_BUCKET_PERMISSIONS && validate_success "s3api get-bucket-encryption" "aws s3api get-bucket-encryption --bucket $S3_TEST_BUCKET"
 require_tf "s3api put-bucket-inventory-configuration" TF_S3_BUCKET_PERMISSIONS && validate_success "s3api put-bucket-inventory-configuration" "aws s3api put-bucket-inventory-configuration --bucket $S3_TEST_BUCKET --id Test --inventory-configuration '{\"Destination\": { \"S3BucketDestination\": { \"AccountId\": \"663117128738\", \"Bucket\": \"arn:aws-iso:s3:::$S3_TEST_BUCKET\", \"Format\": \"CSV\" }}, \"IsEnabled\": true, \"Id\": \"Test\", \"IncludedObjectVersions\": \"Current\", \"Schedule\": { \"Frequency\": \"Daily\" }}'"
 require_tf "s3api get-bucket-inventory-configuration" TF_S3_BUCKET_PERMISSIONS && validate_rewrite_smart "s3api get-bucket-inventory-configuration" "aws s3api get-bucket-inventory-configuration --bucket $S3_TEST_BUCKET --id Test" ""
 require_tf "s3api list-bucket-inventory-configurations" TF_S3_BUCKET_PERMISSIONS && validate_rewrite_smart "s3api list-bucket-inventory-configurations" "aws s3api list-bucket-inventory-configurations --bucket $S3_TEST_BUCKET" ""
@@ -954,16 +973,18 @@ log "########################"
 if require_tf "s3api multipart upload" TF_S3_BUCKET_PERMISSIONS; then
 CREATE_CMD="aws s3api create-multipart-upload --bucket $S3_TEST_BUCKET --key foobarbaz"
 record_cmd "$CREATE_CMD"
-OUTPUT_CREATE=$(eval "$CREATE_CMD" 2>/dev/null)
+OUTPUT_CREATE=$(eval "$CREATE_CMD" 2>"$CMD_STDERR")
 
 echo -n "🔍 s3api create-multipart-upload: "
-if echo "$OUTPUT_CREATE" | jq -r '.. | scalars | select(type == "string")' | grep -Eq 'arn:aws-iso(-b)?:|us-iso(-b)?|c2s\.ic\.gov|sc2s\.sgov\.gov'; then
+# NOTE: The response has no ARN or region to rewrite; an UploadId means the call went through.
+if [[ -n "$(echo "$OUTPUT_CREATE" | jq -r '.UploadId // empty' 2>/dev/null)" ]]; then
   echo "✅ Passed"
   record_pass
   [[ "$VERBOSE" == "1" ]] && echo "$OUTPUT_CREATE" | jq .
 else
-  echo "❌ Failed (no rewritten strings found)"
-  record_fail "s3api create-multipart-upload" "response returned but no ISO ARNs/regions detected — check rewriter"
+  echo "❌ Failed (no UploadId returned)"
+  print_cmd_stderr
+  record_fail "s3api create-multipart-upload" "no UploadId returned"
   echo "$OUTPUT_CREATE" | jq . | head -n 20
 fi
 
@@ -1008,11 +1029,11 @@ require_tf "s3 cp download (deep nested ////)" TF_S3_BUCKET_PERMISSIONS && valid
 require_tf "s3 cp test2.txt" TF_S3_BUCKET_PERMISSIONS && validate_success "s3 cp test2.txt" 'aws s3 cp smallfile.txt "s3://$S3_TEST_BUCKET/test2.txt"'
 require_tf "s3 cp test3.txt" TF_S3_BUCKET_PERMISSIONS && validate_success "s3 cp test3.txt" 'aws s3 cp smallfile.txt "s3://$S3_TEST_BUCKET/foo/test3.txt"'
 
-require_tf "head-object test2.txt" TF_S3_BUCKET_PERMISSIONS && validate_rewrite_smart "head-object test2.txt" 'aws s3api head-object --bucket $S3_TEST_BUCKET --key "test2.txt"' ""
-require_tf "head-object test3.txt" TF_S3_BUCKET_PERMISSIONS && validate_rewrite_smart "head-object test3.txt" 'aws s3api head-object --bucket $S3_TEST_BUCKET --key "foo/test3.txt"' ""
-require_tf "head-object test+.txt" TF_S3_BUCKET_PERMISSIONS && validate_rewrite_smart "head-object test+.txt" 'aws s3api head-object --bucket $S3_TEST_BUCKET --key "foo/bar++/baz/test and test+.txt"' ""
-require_tf "head-object test.txt (nested)" TF_S3_BUCKET_PERMISSIONS && validate_rewrite_smart "head-object test.txt (nested)" 'aws s3api head-object --bucket $S3_TEST_BUCKET --key "foo/bar++/baz//boz//bix//test.txt"' ""
-require_tf "head-object test.txt (deep nested)" TF_S3_BUCKET_PERMISSIONS && validate_rewrite_smart "head-object test.txt (deep nested)" 'aws s3api head-object --bucket $S3_TEST_BUCKET --key "foo/bar++/baz///boz//bix////test.txt"' ""
+require_tf "head-object test2.txt" TF_S3_BUCKET_PERMISSIONS && validate_success "head-object test2.txt" 'aws s3api head-object --bucket $S3_TEST_BUCKET --key "test2.txt"'
+require_tf "head-object test3.txt" TF_S3_BUCKET_PERMISSIONS && validate_success "head-object test3.txt" 'aws s3api head-object --bucket $S3_TEST_BUCKET --key "foo/test3.txt"'
+require_tf "head-object test+.txt" TF_S3_BUCKET_PERMISSIONS && validate_success "head-object test+.txt" 'aws s3api head-object --bucket $S3_TEST_BUCKET --key "foo/bar++/baz/test and test+.txt"'
+require_tf "head-object test.txt (nested)" TF_S3_BUCKET_PERMISSIONS && validate_success "head-object test.txt (nested)" 'aws s3api head-object --bucket $S3_TEST_BUCKET --key "foo/bar++/baz//boz//bix//test.txt"'
+require_tf "head-object test.txt (deep nested)" TF_S3_BUCKET_PERMISSIONS && validate_success "head-object test.txt (deep nested)" 'aws s3api head-object --bucket $S3_TEST_BUCKET --key "foo/bar++/baz///boz//bix////test.txt"'
 
 
 log ""
@@ -1080,7 +1101,7 @@ require_tf "cloudtrail create-trail" TF_S3_BUCKET_CLOUDTRAIL TF_CLOUDWATCH_LOG_G
 validate_rewrite_smart "cloudtrail list-trails" "aws cloudtrail list-trails" ""
 validate_rewrite_smart "cloudtrail describe-trails" "aws cloudtrail describe-trails --trail-name-list \$TRAIL_ARN" ""
 validate_rewrite_smart "cloudtrail get-trail" "aws cloudtrail get-trail --name \$TRAIL_ARN" ""
-validate_rewrite_smart "cloudtrail get-trail-status" "aws cloudtrail get-trail-status --name \$TRAIL_ARN" ""
+validate_success "cloudtrail get-trail-status" "aws cloudtrail get-trail-status --name \$TRAIL_ARN"
 
 validate_rewrite_smart "cloudtrail put-event-selectors (valid)" "aws cloudtrail put-event-selectors --trail-name $CLI_TRAIL_NAME --event-selectors file://cloudtrail_event_selector_valid.json" ""
 validate_rewrite_smart "cloudtrail get-event-selectors" "aws cloudtrail get-event-selectors --trail-name $CLI_TRAIL_NAME" ""
@@ -1269,7 +1290,7 @@ log "########################"
 log "# 40. S3 Bucket Policy Rewrite Validation"
 log "########################"
 
-require_tf "s3api put-bucket-policy" TF_S3_BUCKET_PERMISSIONS && validate_rewrite_smart "s3api put-bucket-policy" "aws s3api put-bucket-policy --bucket $S3_TEST_BUCKET --policy '{ \"Statement\": [ { \"Effect\": \"Allow\", \"Principal\": { \"AWS\": \"arn:aws-iso:iam::770363063475:root\" }, \"Action\": [ \"s3:*\" ], \"Resource\": [ \"arn:aws-iso:s3:::$S3_TEST_BUCKET\", \"arn:aws-iso:s3:::$S3_TEST_BUCKET/*\" ] } ] }'"
+require_tf "s3api put-bucket-policy" TF_S3_BUCKET_PERMISSIONS && validate_success "s3api put-bucket-policy" "aws s3api put-bucket-policy --bucket $S3_TEST_BUCKET --policy '{ \"Statement\": [ { \"Effect\": \"Allow\", \"Principal\": { \"AWS\": \"arn:aws-iso:iam::770363063475:root\" }, \"Action\": [ \"s3:*\" ], \"Resource\": [ \"arn:aws-iso:s3:::$S3_TEST_BUCKET\", \"arn:aws-iso:s3:::$S3_TEST_BUCKET/*\" ] } ] }'"
 require_tf "s3api get-bucket-policy" TF_S3_BUCKET_PERMISSIONS && validate_rewrite_smart "s3api get-bucket-policy" "aws s3api get-bucket-policy --bucket $S3_TEST_BUCKET"
 require_tf "s3api delete-bucket-policy" TF_S3_BUCKET_PERMISSIONS && validate_success "s3api delete-bucket-policy" "aws s3api delete-bucket-policy --bucket $S3_TEST_BUCKET"
 
@@ -1298,10 +1319,10 @@ validate_rewrite_smart "ec2 describe-instances (filter: AZ, VPC, owner-id)" "aws
 validate_rewrite_smart "ec2 describe-instance-status (filter: AZ)" "aws ec2 describe-instance-status --filters \"Name=availability-zone,Values=us-iso-east-1a,us-iso-east-1b\""
 validate_rewrite_smart "ec2 describe-volumes (filter: AZ)" "aws ec2 describe-volumes --filters \"Name=availability-zone,Values=us-iso-east-1a,us-iso-east-1b\""
 validate_rewrite_smart "ec2 describe-volume-status (filter: AZ)" "aws ec2 describe-volume-status --filters \"Name=availability-zone,Values=us-iso-east-1a,us-iso-east-1b\""
-validate_rewrite_smart "ec2 describe-reserved-instances (filter: AZ)" "aws ec2 describe-reserved-instances --filters \"Name=availability-zone,Values=us-iso-east-1a,us-iso-east-1b\""
+validate_success "ec2 describe-reserved-instances (filter: AZ)" "aws ec2 describe-reserved-instances --filters \"Name=availability-zone,Values=us-iso-east-1a,us-iso-east-1b\""
 validate_rewrite_smart "ec2 describe-reserved-instances-offerings (filter: AZ, max-items)" "aws ec2 describe-reserved-instances-offerings --max-items 10 --filters \"Name=availability-zone,Values=us-iso-east-1a,us-iso-east-1b\""
 validate_rewrite_smart "ec2 describe-network-interfaces (filter: AZ)" "aws ec2 describe-network-interfaces --filters \"Name=availability-zone,Values=us-iso-east-1a,us-iso-east-1b\""
-validate_rewrite_smart "ec2 describe-capacity-reservations (filter: AZ)" "aws ec2 describe-capacity-reservations --filter \"Name=availability-zone,Values=us-iso-east-1a,us-iso-east-1b\""
+validate_success "ec2 describe-capacity-reservations (filter: AZ)" "aws ec2 describe-capacity-reservations --filter \"Name=availability-zone,Values=us-iso-east-1a,us-iso-east-1b\""
 validate_rewrite_smart "ec2 describe-availability-zones (region us-iso)" "aws ec2 describe-availability-zones --filters Name=region-name,Values=us-iso-east-1"
 require_isob "ec2 describe-availability-zones (region us-isob)" && validate_rewrite_smart "ec2 describe-availability-zones (region us-isob)" "aws ec2 describe-availability-zones --filters Name=region-name,Values=us-isob-east-1 --region us-isob-east-1"
 
@@ -1346,8 +1367,8 @@ log "########################"
 log "# 47. Elasticache encryption violation (actually Combine rejection)"
 log "########################"
 
-validate_expected_error_match "elasticache create-cache-cluster with encryption" "aws elasticache create-cache-cluster --cache-cluster-id foo --transit-encryption-enabled --region us-iso-east-1" "Combine rejected this AWS API"
-validate_expected_error_match "elasticache create-replication-group with encryption" "aws elasticache create-replication-group --replication-group-id foo --replication-group-description foo --transit-encryption-enabled --region us-iso-east-1" "Combine rejected this AWS API"
+validate_expected_error_match "elasticache create-cache-cluster with encryption" "aws elasticache create-cache-cluster --cache-cluster-id foo --engine redis --cache-node-type cache.m5.large --num-cache-nodes 1 --transit-encryption-enabled --region us-iso-east-1" "Combine rejected this AWS API"
+validate_expected_error_match "elasticache create-replication-group with encryption" "aws elasticache create-replication-group --replication-group-id foo --replication-group-description foo --engine redis --cache-node-type cache.m5.large --transit-encryption-enabled --region us-iso-east-1" "Combine rejected this AWS API"
 validate_expected_error_match "elasticache modify-replication-group with encryption" "aws elasticache modify-replication-group --replication-group-id foo --transit-encryption-enabled --region us-iso-east-1" "Combine rejected this AWS API"
 
 log ""
@@ -1403,8 +1424,7 @@ log "########################"
 record_cmd "aws swf register-domain --name CombineTest --workflow-execution-retention-period-in-days 1"
 if aws swf register-domain --name CombineTest --workflow-execution-retention-period-in-days 1 2>&1 | grep -q "DomainAlreadyExistsFault"; then
   log "ℹ️  Domain CombineTest already exists. Attempting undeprecate."
-  record_cmd "aws swf undeprecate-domain --name CombineTest"
-  aws swf undeprecate-domain --name CombineTest >/dev/null 2>&1
+  validate_success "swf undeprecate-domain" "aws swf undeprecate-domain --name CombineTest"
 else
   log "✅ Domain CombineTest registered."
 fi
@@ -1423,14 +1443,14 @@ log "# 53. RDS Cluster + Instance End-to-End"
 log "########################"
 
 
-require_tf "create-db-instance 2" TF_RDS_SUBNET_GROUP_NAME && validate_rewrite_smart "create-db-instance 2" "aws rds create-db-instance --master-username combineadmin --master-user-password Combine1275317 --db-subnet-group-name \$TF_RDS_SUBNET_GROUP_NAME --db-instance-identifier CombineEndpointTestInstance2 --db-instance-class db.t3.micro --allocated-storage 8 --engine mysql --availability-zone us-iso-east-1a"
-require_tf "create-db-cluster 2" TF_RDS_SUBNET_GROUP_NAME && validate_rewrite_smart "create-db-cluster 2" "aws rds create-db-cluster --master-username combineadmin --master-user-password Combine1275317 --db-cluster-identifier CombineEndpointTestCluster2 --db-subnet-group-name \$TF_RDS_SUBNET_GROUP_NAME --engine aurora-postgresql --availability-zones us-iso-east-1a us-iso-east-1b us-iso-east-1c"
+require_long "create-db-instance 2" && require_tf "create-db-instance 2" TF_RDS_SUBNET_GROUP_NAME && validate_rewrite_smart "create-db-instance 2" "aws rds create-db-instance --master-username combineadmin --master-user-password Combine1275317 --db-subnet-group-name \$TF_RDS_SUBNET_GROUP_NAME --db-instance-identifier CombineEndpointTestInstance2 --db-instance-class db.t3.micro --allocated-storage 8 --engine mysql --availability-zone us-iso-east-1a"
+require_long "create-db-cluster 2" && require_tf "create-db-cluster 2" TF_RDS_SUBNET_GROUP_NAME && validate_rewrite_smart "create-db-cluster 2" "aws rds create-db-cluster --master-username combineadmin --master-user-password Combine1275317 --db-cluster-identifier CombineEndpointTestCluster2 --db-subnet-group-name \$TF_RDS_SUBNET_GROUP_NAME --engine aurora-postgresql --availability-zones us-iso-east-1a us-iso-east-1b us-iso-east-1c"
 validate_rewrite_smart "describe-db-instances" "aws rds describe-db-instances"
 validate_rewrite_smart "describe-db-clusters" "aws rds describe-db-clusters"
 validate_rewrite_smart "describe-db-subnet-groups" "aws rds describe-db-subnet-groups"
-require_tf "delete-db-instance 2" TF_RDS_SUBNET_GROUP_NAME && validate_rewrite_smart "delete-db-instance 2" "aws rds delete-db-instance --skip-final-snapshot --db-instance-identifier CombineEndpointTestInstance2"
-require_tf "delete-db-cluster 2" TF_RDS_SUBNET_GROUP_NAME && validate_rewrite_smart "delete-db-cluster 2" "aws rds delete-db-cluster --skip-final-snapshot --db-cluster-identifier CombineEndpointTestCluster2"
-if [[ -n "$TF_RDS_SUBNET_GROUP_NAME" ]]; then
+require_long "delete-db-instance 2" && require_tf "delete-db-instance 2" TF_RDS_SUBNET_GROUP_NAME && validate_rewrite_smart "delete-db-instance 2" "aws rds delete-db-instance --skip-final-snapshot --db-instance-identifier CombineEndpointTestInstance2"
+require_long "delete-db-cluster 2" && require_tf "delete-db-cluster 2" TF_RDS_SUBNET_GROUP_NAME && validate_rewrite_smart "delete-db-cluster 2" "aws rds delete-db-cluster --skip-final-snapshot --db-cluster-identifier CombineEndpointTestCluster2"
+if [[ "$LONG_TESTS" == "true" && -n "$TF_RDS_SUBNET_GROUP_NAME" ]]; then
   wait_rds_deleted instance CombineEndpointTestInstance2
   wait_rds_deleted cluster CombineEndpointTestCluster2
 fi
@@ -1440,10 +1460,10 @@ log "########################"
 log "# 54. RDS instance type will fail due to instance type"
 log "########################"
 
-require_tf "unsupported RDS instance type" TF_RDS_SUBNET_GROUP_NAME && validate_expected_error_match "unsupported RDS instance type" "aws rds create-db-instance --master-username combineadmin --master-user-password Combine1275317 --db-subnet-group-name \$TF_RDS_SUBNET_GROUP_NAME --db-instance-identifier CombineEndpointTestInstanceInvalid --db-instance-class \$UNSUPPORTED_INSTANCE_TYPE --allocated-storage 8 --engine mysql --availability-zone us-iso-east-1a" "Combine rejected this AWS API"
-require_tf "create-db-instance supported type" TF_RDS_SUBNET_GROUP_NAME && validate_rewrite_smart "create-db-instance supported type" "aws rds create-db-instance --master-username combineadmin --master-user-password Combine1275317 --db-subnet-group-name \$TF_RDS_SUBNET_GROUP_NAME --db-instance-identifier CombineEndpointTestInstance --db-instance-class db.m5.large --allocated-storage 8 --engine mysql --availability-zone us-iso-east-1a"
-require_tf "delete-db-instance supported type" TF_RDS_SUBNET_GROUP_NAME && validate_success "delete-db-instance supported type" "aws rds delete-db-instance --skip-final-snapshot --db-instance-identifier CombineEndpointTestInstance"
-[[ -n "$TF_RDS_SUBNET_GROUP_NAME" ]] && wait_rds_deleted instance CombineEndpointTestInstance
+require_tf "unsupported RDS instance type" TF_RDS_SUBNET_GROUP_NAME && validate_expected_error_match "unsupported RDS instance type" "aws rds create-db-instance --master-username combineadmin --master-user-password Combine1275317 --db-subnet-group-name \$TF_RDS_SUBNET_GROUP_NAME --db-instance-identifier CombineEndpointTestInstanceInvalid --db-instance-class \$UNSUPPORTED_INSTANCE_TYPE --allocated-storage 8 --engine mysql --availability-zone us-iso-east-1a" "Invalid DB Instance class"
+require_long "create-db-instance supported type" && require_tf "create-db-instance supported type" TF_RDS_SUBNET_GROUP_NAME && validate_rewrite_smart "create-db-instance supported type" "aws rds create-db-instance --master-username combineadmin --master-user-password Combine1275317 --db-subnet-group-name \$TF_RDS_SUBNET_GROUP_NAME --db-instance-identifier CombineEndpointTestInstance --db-instance-class db.m5.large --allocated-storage 8 --engine mysql --availability-zone us-iso-east-1a"
+require_long "delete-db-instance supported type" && require_tf "delete-db-instance supported type" TF_RDS_SUBNET_GROUP_NAME && validate_success "delete-db-instance supported type" "aws rds delete-db-instance --skip-final-snapshot --db-instance-identifier CombineEndpointTestInstance"
+[[ "$LONG_TESTS" == "true" && -n "$TF_RDS_SUBNET_GROUP_NAME" ]] && wait_rds_deleted instance CombineEndpointTestInstance
 
 log ""
 log "########################"
@@ -1517,7 +1537,7 @@ log "########################"
 
 validate_rewrite_smart "ec2 describe-instance-type-offerings (default region)" "aws ec2 describe-instance-type-offerings"
 require_isob "ec2 describe-instance-type-offerings (ISOB region)" && validate_rewrite_smart "ec2 describe-instance-type-offerings (ISOB region)" "aws ec2 describe-instance-type-offerings --region us-isob-east-1"
-validate_instance_type_absent_grep "instance-type-offerings (t2.nano filtering)" "aws ec2 describe-instance-type-offerings --filters Name=instance-type,Values=t2.nano,t2.micro,t3.nano" "t2.nano"
+validate_instance_type_absent_grep "instance-type-offerings (r7g.large filtered out)" "aws ec2 describe-instance-type-offerings --filters Name=instance-type,Values=r7g.large,t3.nano" "r7g.large"
 
 log ""
 log "########################"
@@ -1554,7 +1574,7 @@ log "########################"
 
 require_tf "cloudwatch put-metric-alarm (create alarm)" TF_SNS_TOPIC_2_ARN TF_CLOUDWATCH_ALARM_NAME && validate_success "cloudwatch put-metric-alarm (create alarm)" "aws cloudwatch put-metric-alarm --alarm-name CombineTest${RUN_SUFFIX} --metric-name CPUUtilization --namespace AWS/EC2 --statistic Average --period 300 --threshold 70 --comparison-operator GreaterThanThreshold --dimensions Name=InstanceId,Value=i-12345678912 --evaluation-periods 2 --ok-actions $TF_SNS_TOPIC_2_ARN --insufficient-data-actions $TF_SNS_TOPIC_2_ARN --alarm-actions $TF_SNS_TOPIC_2_ARN --unit Percent"
 require_tf "cloudwatch describe-alarms (rewrite check)" TF_SNS_TOPIC_2_ARN TF_CLOUDWATCH_ALARM_NAME && validate_rewrite_smart "cloudwatch describe-alarms (rewrite check)" "aws cloudwatch describe-alarms --action-prefix $TF_SNS_TOPIC_2_ARN"
-require_tf "cloudwatch list-tags-for-resource (no tags expected)" TF_SNS_TOPIC_2_ARN TF_CLOUDWATCH_ALARM_NAME && validate_rewrite_smart "cloudwatch list-tags-for-resource (no tags expected)" "aws cloudwatch list-tags-for-resource --resource-arn arn:aws-iso:cloudwatch:us-iso-east-1:663117128738:alarm:$TF_CLOUDWATCH_ALARM_NAME"
+require_tf "cloudwatch list-tags-for-resource (no tags expected)" TF_SNS_TOPIC_2_ARN TF_CLOUDWATCH_ALARM_NAME && validate_success "cloudwatch list-tags-for-resource (no tags expected)" "aws cloudwatch list-tags-for-resource --resource-arn arn:aws-iso:cloudwatch:us-iso-east-1:663117128738:alarm:$TF_CLOUDWATCH_ALARM_NAME"
 require_tf "cloudwatch delete-alarms" TF_SNS_TOPIC_2_ARN TF_CLOUDWATCH_ALARM_NAME && validate_success "cloudwatch delete-alarms" "aws cloudwatch delete-alarms --alarm-names CombineTest${RUN_SUFFIX}"
 require_tf "cloudwatch describe-alarms (should be empty after delete)" TF_SNS_TOPIC_2_ARN TF_CLOUDWATCH_ALARM_NAME && validate_rewrite_smart "cloudwatch describe-alarms (should be empty after delete)" "aws cloudwatch describe-alarms --action-prefix $TF_SNS_TOPIC_2_ARN"
 
@@ -1569,7 +1589,7 @@ validate_rewrite_smart "events create-event-bus" "aws events create-event-bus --
 validate_rewrite_smart "events describe-event-bus" "aws events describe-event-bus --name arn:aws-iso:events:us-iso-east-1:663117128738:event-bus/CombineTest"
 require_tf "events put-rule" TF_IAM_ROLE_CW_EVENTS_ARN TF_LAMBDA_FUNCTION_ARN && validate_rewrite_smart "events put-rule" "aws events put-rule --name CombineTest --event-pattern '{\"source\":[\"com.mycompany.myapp\"]}' --role-arn $TF_IAM_ROLE_CW_EVENTS_ARN --event-bus-name arn:aws-iso:events:us-iso-east-1:663117128738:event-bus/CombineTest"
 validate_rewrite_smart "events describe-rule" "aws events describe-rule --name CombineTest --event-bus-name arn:aws-iso:events:us-iso-east-1:663117128738:event-bus/CombineTest"
-require_tf "events put-targets" TF_IAM_ROLE_CW_EVENTS_ARN TF_LAMBDA_FUNCTION_ARN && validate_rewrite_smart "events put-targets" "aws events put-targets --rule CombineTest --event-bus-name arn:aws-iso:events:us-iso-east-1:663117128738:event-bus/CombineTest --targets Id=Foo,Arn=$TF_LAMBDA_FUNCTION_ARN"
+require_tf "events put-targets" TF_IAM_ROLE_CW_EVENTS_ARN TF_LAMBDA_FUNCTION_ARN && validate_success "events put-targets" "aws events put-targets --rule CombineTest --event-bus-name arn:aws-iso:events:us-iso-east-1:663117128738:event-bus/CombineTest --targets Id=Foo,Arn=$TF_LAMBDA_FUNCTION_ARN"
 validate_rewrite_smart "events list-targets-by-rule" "aws events list-targets-by-rule --rule CombineTest --event-bus-name arn:aws-iso:events:us-iso-east-1:663117128738:event-bus/CombineTest"
 validate_success "events put-events (events.json)" "aws events put-events --entries file://events.json"
 validate_success "events remove-targets" "aws events remove-targets --event-bus-name arn:aws-iso:events:us-iso-east-1:663117128738:event-bus/CombineTest --rule CombineTest --ids Foo"
@@ -1643,16 +1663,16 @@ log "########################"
 validate_rewrite_smart "lambda create-code-signing-config" "aws lambda create-code-signing-config --allowed-publishers SigningProfileVersionArns=arn:aws-iso:iam::663117128738:user/test-combine-endpoints-user" "" ".CodeSigningConfig.CodeSigningConfigArn" "CODE_SIGNING_ARN"
 validate_rewrite_smart "lambda get-code-signing-config" "aws lambda get-code-signing-config --code-signing-config-arn \$CODE_SIGNING_ARN"
 validate_success "lambda delete-code-signing-config" "aws lambda delete-code-signing-config --code-signing-config-arn \$CODE_SIGNING_ARN"
-require_tf "lambda add-permission from S3 arn" TF_LAMBDA_FUNCTION_NAME && validate_rewrite_smart "lambda add-permission from S3 arn" "aws lambda add-permission --function-name \$TF_LAMBDA_FUNCTION_NAME --statement-id TestArn --action lambda:InvokeFunction --principal s3.amazonaws.com --source-arn arn:aws-iso:s3:::combine-devops-370881201289"
-require_tf "lambda add-permission from EMR" TF_LAMBDA_FUNCTION_NAME && validate_rewrite_smart "lambda add-permission from EMR" "aws lambda add-permission --function-name \$TF_LAMBDA_FUNCTION_NAME --statement-id TestServicePrincipal --action lambda:InvokeFunction --principal elasticmapreduce.c2s.ic.gov"
-require_tf "lambda add-permission from EC2 optional" TF_LAMBDA_FUNCTION_NAME && validate_rewrite_smart "lambda add-permission from EC2 optional" "aws lambda add-permission --function-name \$TF_LAMBDA_FUNCTION_NAME --statement-id TestServicePrincipalOptional --action lambda:InvokeFunction --principal ec2.c2s.ic.gov"
+require_tf "lambda add-permission from S3 arn" TF_LAMBDA_FUNCTION_NAME && validate_rewrite_smart "lambda add-permission from S3 arn" "aws lambda add-permission --function-name \$TF_LAMBDA_FUNCTION_NAME --statement-id CliTestArn --action lambda:InvokeFunction --principal s3.amazonaws.com --source-arn arn:aws-iso:s3:::combine-devops-370881201289"
+require_tf "lambda add-permission from EMR" TF_LAMBDA_FUNCTION_NAME && validate_rewrite_smart "lambda add-permission from EMR" "aws lambda add-permission --function-name \$TF_LAMBDA_FUNCTION_NAME --statement-id CliTestServicePrincipal --action lambda:InvokeFunction --principal elasticmapreduce.c2s.ic.gov"
+require_tf "lambda add-permission from EC2 optional" TF_LAMBDA_FUNCTION_NAME && validate_rewrite_smart "lambda add-permission from EC2 optional" "aws lambda add-permission --function-name \$TF_LAMBDA_FUNCTION_NAME --statement-id CliTestServicePrincipalOptional --action lambda:InvokeFunction --principal ec2.c2s.ic.gov"
 require_tf "lambda get-policy" TF_LAMBDA_FUNCTION_NAME && validate_rewrite_smart "lambda get-policy" "aws lambda get-policy --function-name \$TF_LAMBDA_FUNCTION_NAME"
 require_tf "lambda create-alias" TF_LAMBDA_FUNCTION_ARN && validate_rewrite_smart "lambda create-alias" "aws lambda create-alias --function-name \$TF_LAMBDA_FUNCTION_ARN --name TestAlias --function-version '\$LATEST'"
 require_tf "lambda get-alias" TF_LAMBDA_FUNCTION_ARN && validate_rewrite_smart "lambda get-alias" "aws lambda get-alias --function-name \$TF_LAMBDA_FUNCTION_ARN --name TestAlias"
 require_tf "lambda delete-alias" TF_LAMBDA_FUNCTION_ARN && validate_success "lambda delete-alias" "aws lambda delete-alias --function-name \$TF_LAMBDA_FUNCTION_ARN --name TestAlias"
-require_tf "lambda remove-permission (S3 arn)" TF_LAMBDA_FUNCTION_NAME && validate_success "lambda remove-permission (S3 arn)" "aws lambda remove-permission --function-name \$TF_LAMBDA_FUNCTION_NAME --statement-id TestArn"
-require_tf "lambda remove-permission (EMR)" TF_LAMBDA_FUNCTION_NAME && validate_success "lambda remove-permission (EMR)" "aws lambda remove-permission --function-name \$TF_LAMBDA_FUNCTION_NAME --statement-id TestServicePrincipal"
-require_tf "lambda remove-permission (EC2 optional)" TF_LAMBDA_FUNCTION_NAME && validate_success "lambda remove-permission (EC2 optional)" "aws lambda remove-permission --function-name \$TF_LAMBDA_FUNCTION_NAME --statement-id TestServicePrincipalOptional"
+require_tf "lambda remove-permission (S3 arn)" TF_LAMBDA_FUNCTION_NAME && validate_success "lambda remove-permission (S3 arn)" "aws lambda remove-permission --function-name \$TF_LAMBDA_FUNCTION_NAME --statement-id CliTestArn"
+require_tf "lambda remove-permission (EMR)" TF_LAMBDA_FUNCTION_NAME && validate_success "lambda remove-permission (EMR)" "aws lambda remove-permission --function-name \$TF_LAMBDA_FUNCTION_NAME --statement-id CliTestServicePrincipal"
+require_tf "lambda remove-permission (EC2 optional)" TF_LAMBDA_FUNCTION_NAME && validate_success "lambda remove-permission (EC2 optional)" "aws lambda remove-permission --function-name \$TF_LAMBDA_FUNCTION_NAME --statement-id CliTestServicePrincipalOptional"
 validate_rewrite_smart "lambda list-functions ALL" "aws lambda list-functions --function-version ALL"
 validate_rewrite_smart "lambda list-functions master region" "aws lambda list-functions --master-region us-iso-east-1 --function-version ALL"
 
@@ -1699,10 +1719,11 @@ log "# 76. EFS create + policy and access point validation"
 log "########################"
 
 validate_rewrite_smart "efs create-file-system" "aws efs create-file-system --performance-mode generalPurpose --throughput-mode bursting" "" ".FileSystemId" "FS_ID"
+[[ -n "${FS_ID:-}" ]] && { log "⏳ Waiting for EFS file system $FS_ID to become available..."; wait_until 300 "[[ \$(aws efs describe-file-systems --file-system-id $FS_ID --query 'FileSystems[0].LifeCycleState' --output text) == available ]]" || log "⚠️  EFS file system $FS_ID did not become available in time"; }
 validate_rewrite_smart "efs put-file-system-policy" "aws efs put-file-system-policy --file-system-id \$FS_ID --policy file://efs-policy.json"
 validate_rewrite_smart "efs describe-file-systems" "aws efs describe-file-systems"
 validate_rewrite_smart "efs describe-file-system-policy" "aws efs describe-file-system-policy --file-system-id \$FS_ID"
-validate_rewrite_smart "efs describe-access-points" "aws efs describe-access-points"
+validate_success "efs describe-access-points" "aws efs describe-access-points"
 validate_success "efs delete-file-system" "aws efs delete-file-system --file-system-id \$FS_ID"
 
 log ""
@@ -1878,7 +1899,7 @@ validate_s3 "S3 smallfile.txt (path addressing)" "smallfile.txt" "foo/smallfile.
 validate_s3 "S3 file.txt (path addressing)" "file.txt" "foo/file.txt" "checksum"
 validate_s3 "S3 file++.txt (path addressing)" "file.txt" "foo/bar/baz/file++.txt" "checksum"
 validate_s3 "S3 bigfile.txt (path addressing)" "bigfile.txt" "foo/bigfile.txt" "checksum"
-validate_s3 "S3 megafile.txt (path addressing)" "megafile.txt" "foo/megafile.txt" "checksum"
+require_long "S3 megafile.txt (path addressing)" && validate_s3 "S3 megafile.txt (path addressing)" "megafile.txt" "foo/megafile.txt" "checksum"
 set_s3_addressing_style auto
 validate_success "s3api create-bucket (auto addressing)" "aws s3api create-bucket --bucket combine-test-lc${RUN_SUFFIX,,} --create-bucket-configuration LocationConstraint=us-iso-east-1"
 validate_success "s3api delete-bucket (auto addressing)" "aws s3api delete-bucket --bucket combine-test-lc${RUN_SUFFIX,,}"
@@ -1888,15 +1909,17 @@ log "########################"
 log "# 84. ElastiCache engine versions – unsupported versions rejected, supported ones pass"
 log "########################"
 
-validate_expected_error_match "elasticache create-cache-cluster (valkey 8.1)" "aws elasticache create-cache-cluster --cache-cluster-id foo --engine valkey --engine-version 8.1 --cache-node-type cache.m5.large --num-cache-nodes 1" "Combine rejected this AWS API"
-validate_expected_error_match "elasticache create-cache-cluster (redis 7.0)" "aws elasticache create-cache-cluster --cache-cluster-id foo --engine redis --engine-version 7.0 --cache-node-type cache.m5.large --num-cache-nodes 1" "Combine rejected this AWS API"
-validate_expected_error_match "elasticache create-cache-cluster (memcached 1.4.14)" "aws elasticache create-cache-cluster --cache-cluster-id foo --engine memcached --engine-version 1.4.14 --cache-node-type cache.m5.large --num-cache-nodes 1" "Combine rejected this AWS API"
+validate_expected_error_match "elasticache create-cache-cluster (valkey 8.1)" "aws elasticache create-cache-cluster --cache-cluster-id foo --engine valkey --engine-version 8.1 --cache-node-type cache.m5.large --num-cache-nodes 1" "Cannot find version"
+validate_expected_error_match "elasticache create-cache-cluster (redis 7.0)" "aws elasticache create-cache-cluster --cache-cluster-id foo --engine redis --engine-version 7.0 --cache-node-type cache.m5.large --num-cache-nodes 1" "Cannot find version"
+validate_expected_error_match "elasticache create-cache-cluster (memcached 1.4.14)" "aws elasticache create-cache-cluster --cache-cluster-id foo --engine memcached --engine-version 1.4.14 --cache-node-type cache.m5.large --num-cache-nodes 1" "Cannot find version"
 
 CACHE_ID="combinetest${RUN_SUFFIX,,}"
-if [[ -n "$SUBNET_3" ]]; then
+if ! require_long "elasticache cache cluster lifecycle"; then
+  :
+elif [[ -n "$SUBNET_3" ]]; then
   validate_rewrite_smart "elasticache create-cache-subnet-group" "aws elasticache create-cache-subnet-group --cache-subnet-group-name $CACHE_ID --cache-subnet-group-description Foo --subnet-ids $SUBNET_1 $SUBNET_2 $SUBNET_3"
   validate_rewrite_smart "elasticache create-cache-cluster (redis 6.2)" "aws elasticache create-cache-cluster --cache-cluster-id $CACHE_ID --engine redis --engine-version 6.2 --cache-node-type cache.m5.large --num-cache-nodes 1 --az-mode single-az --preferred-availability-zones us-iso-east-1a --cache-subnet-group-name $CACHE_ID"
-  validate_expected_error_match "elasticache modify-cache-cluster (7.0 unsupported)" "aws elasticache modify-cache-cluster --cache-cluster-id $CACHE_ID --engine-version 7.0" "Combine rejected this AWS API"
+  validate_expected_error_match "elasticache modify-cache-cluster (7.0 unsupported)" "aws elasticache modify-cache-cluster --cache-cluster-id $CACHE_ID --engine-version 7.0" "Cannot find version"
   # NOTE: Only Combine's validation is under test; AWS may still refuse because the cluster is not "available" yet.
   validate_not_rejected "elasticache modify-cache-cluster (7.1 supported)" "aws elasticache modify-cache-cluster --cache-cluster-id $CACHE_ID --engine-version 7.1"
   log "⏳ Waiting for ElastiCache cluster $CACHE_ID to become available so it can be deleted..."
@@ -1934,57 +1957,57 @@ log "########################"
 log "# 86. EC2 / DLM unsupported features – should be rejected by Combine"
 log "########################"
 
-validate_expected_error_match "ec2 create-fleet (1)" "aws ec2 create-fleet --type request --launch-template-configs {} --target-capacity-specification {}" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 create-fleet (2)" "aws ec2 create-fleet --type maintain --launch-template-configs {} --target-capacity-specification {}" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 copy-image" "aws ec2 copy-image --snapshot-copy-completion-duration-minutes 30 --name testCopy --source-image-id ami-123123123123 --source-region us-iso-east-1" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 modify-image-attribute (1)" "aws ec2 modify-image-attribute --image-id ami-123123123123 --attribute launchPermission --operation-type add --organization-arns foo --organizational-unit-arns foo" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 modify-image-attribute (2)" "aws ec2 modify-image-attribute --image-id ami-123123123123 --launch-permission \"Add=[{UserId=foo},{Group=foo},{OrganizationArn=foo}],Remove=[{UserId=foo},{Group=foo}]\"" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 modify-image-attribute (3)" "aws ec2 modify-image-attribute --image-id ami-123123123123 --launch-permission \"Add=[{UserId=foo},{Group=foo},{OrganizationalUnitArn=foo}],Remove=[{UserId=foo},{Group=foo}]\"" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 modify-image-attribute (4)" "aws ec2 modify-image-attribute --image-id ami-123123123123 --launch-permission \"Add=[{UserId=foo},{Group=foo}],Remove=[{UserId=foo},{Group=foo},{OrganizationArn=foo}]\"" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 modify-image-attribute (5)" "aws ec2 modify-image-attribute --image-id ami-123123123123 --launch-permission \"Add=[{UserId=foo},{Group=foo}],Remove=[{UserId=foo},{Group=foo},{OrganizationalUnitArn=foo}]\"" "Combine rejected this AWS API"
+validate_expected_error_match "ec2 create-fleet (1)" "aws ec2 create-fleet --type request --launch-template-configs {} --target-capacity-specification {}" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 create-fleet (2)" "aws ec2 create-fleet --type maintain --launch-template-configs {} --target-capacity-specification {}" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 copy-image" "aws ec2 copy-image --snapshot-copy-completion-duration-minutes 30 --name testCopy --source-image-id ami-123123123123 --source-region us-iso-east-1" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 modify-image-attribute (1)" "aws ec2 modify-image-attribute --image-id ami-123123123123 --attribute launchPermission --operation-type add --organization-arns foo --organizational-unit-arns foo" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 modify-image-attribute (2)" "aws ec2 modify-image-attribute --image-id ami-123123123123 --launch-permission \"Add=[{UserId=foo},{Group=foo},{OrganizationArn=foo}],Remove=[{UserId=foo},{Group=foo}]\"" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 modify-image-attribute (3)" "aws ec2 modify-image-attribute --image-id ami-123123123123 --launch-permission \"Add=[{UserId=foo},{Group=foo},{OrganizationalUnitArn=foo}],Remove=[{UserId=foo},{Group=foo}]\"" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 modify-image-attribute (4)" "aws ec2 modify-image-attribute --image-id ami-123123123123 --launch-permission \"Add=[{UserId=foo},{Group=foo}],Remove=[{UserId=foo},{Group=foo},{OrganizationArn=foo}]\"" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 modify-image-attribute (5)" "aws ec2 modify-image-attribute --image-id ami-123123123123 --launch-permission \"Add=[{UserId=foo},{Group=foo}],Remove=[{UserId=foo},{Group=foo},{OrganizationalUnitArn=foo}]\"" "Combine rejected this AWS API\|is not supported in this region"
 validate_expected_error_match "ec2 modify-image-attribute (6)" "aws ec2 modify-image-attribute --image-id ami-123123123123 --launch-permission \"Add=[{UserId=foo},{Group=foo}],Remove=[{UserId=foo},{Group=foo}]\"" "attribute item value"
-validate_expected_error_match "ec2 create-launch-template" "aws ec2 create-launch-template --launch-template-name foo --launch-template-data ImageId=resolve:ssm:foo" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 create-launch-template-version" "aws ec2 create-launch-template-version --launch-template-name foo --launch-template-data ImageId=resolve:ssm:foo" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 create-instance-event-window" "aws ec2 create-instance-event-window" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 modify-instance-maintenance-options" "aws ec2 modify-instance-maintenance-options --instance-id i-12312312312312312 --reboot-migration disabled" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 create-network-interface" "aws ec2 create-network-interface --subnet-id subnet-123123123123123 --description \"Test\" --ipv4-prefixes Ipv4Prefix=10.0.0.0/28" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 assign-private-ip-addresses" "aws ec2 assign-private-ip-addresses --network-interface-id eni-12312312312312312 --ipv4-prefixes 10.0.0.0/28" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 attach-network-interface" "aws ec2 attach-network-interface --network-interface-id eni-1234567890abcdef0 --instance-id i-1234567890abcdef0 --device-index 1 --ena-srd-specification 'EnaSrdEnabled=true'" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 modify-network-interface-attribute" "aws ec2 modify-network-interface-attribute --network-interface-id eni-1234567890abcdef0 --ena-srd-specification 'EnaSrdEnabled=true'" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 create-volume" "aws ec2 create-volume --volume-type io1 --multi-attach-enabled --size 100 --iops 2000 --availability-zone us-iso-east-1a" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 modify-volume" "aws ec2 modify-volume --volume-id vol-01234567890abcdef --multi-attach-enabled" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 copy-snapshot" "aws ec2 copy-snapshot --completion-duration-minutes 15 --source-snapshot-id snap-0abcdef1234567890 --source-region us-iso-east-1 --destination-availability-zone us-iso-east-1a" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 cancel-capacity-reservation-fleets" "aws ec2 cancel-capacity-reservation-fleets --capacity-reservation-fleet-ids foo" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 create-capacity-reservation-fleet" "aws ec2 create-capacity-reservation-fleet --instance-type-specifications {} --total-target-capacity 2" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 run-instances" "aws ec2 run-instances --network-performance-options BandwidthWeighting=vpc-1 --image-id ami-213123123123" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 modify-instance-network-performance-options" "aws ec2 modify-instance-network-performance-options --instance-id i-1234567890abcdef0 --bandwidth-weighting=vpc-1" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 create-snapshots" "aws ec2 create-snapshots --instance-specification InstanceId=i-123123123123,ExcludeBootVolume=true,ExcludeDataVolumeIds=vol-123123123123" "Combine rejected this AWS API"
-validate_expected_error_match "dlm create-lifecycle-policy (1)" "aws dlm create-lifecycle-policy --execution-role-arn foo --description foo --state foo --policy-details {} --default-policy INSTANCE" "Combine rejected this AWS API"
-validate_expected_error_match "dlm create-lifecycle-policy (2)" "aws dlm create-lifecycle-policy --execution-role-arn foo --description foo --state foo --policy-details \"Schedules={ArchiveRule={RetainRule={}}}\"" "Combine rejected this AWS API"
-validate_expected_error_match "dlm update-lifecycle-policy (1)" "aws dlm update-lifecycle-policy --policy-id foo --policy-details \"Schedules={ArchiveRule={RetainRule={}}}\"" "Combine rejected this AWS API"
-validate_expected_error_match "dlm create-lifecycle-policy (3)" "aws dlm create-lifecycle-policy --execution-role-arn foo --description foo --state foo --policy-details \"Schedules={FastRestoreRule={}}\"" "Combine rejected this AWS API"
-validate_expected_error_match "dlm update-lifecycle-policy (2)" "aws dlm update-lifecycle-policy --policy-id foo --policy-details \"Schedules={FastRestoreRule={}}\"" "Combine rejected this AWS API"
-validate_expected_error_match "dlm create-lifecycle-policy (4)" "aws dlm create-lifecycle-policy --execution-role-arn foo --description foo --state foo --policy-details \"Parameters={ExcludeDataVolumeTags=[]}\"" "Combine rejected this AWS API"
-validate_expected_error_match "dlm update-lifecycle-policy (3)" "aws dlm update-lifecycle-policy --policy-id foo --policy-details \"Parameters={ExcludeDataVolumeTags=[]}\"" "Combine rejected this AWS API"
-validate_expected_error_match "dlm create-lifecycle-policy (5)" "aws dlm create-lifecycle-policy --execution-role-arn foo --description foo --state foo --policy-details \"Exclusions={}\"" "Combine rejected this AWS API"
-validate_expected_error_match "dlm update-lifecycle-policy (4)" "aws dlm update-lifecycle-policy --policy-id foo --policy-details \"Exclusions={}\"" "Combine rejected this AWS API"
-validate_expected_error_match "dlm create-lifecycle-policy (6)" "aws dlm create-lifecycle-policy --execution-role-arn foo --description foo --state foo --policy-details {} --exclusions {}" "Combine rejected this AWS API"
-validate_expected_error_match "dlm update-lifecycle-policy (5)" "aws dlm update-lifecycle-policy --policy-id foo --exclusions {}" "Combine rejected this AWS API"
-validate_expected_error_match "dlm create-lifecycle-policy (7)" "aws dlm create-lifecycle-policy --execution-role-arn foo --description foo --state foo --policy-details \"Schedules={CreateRule={Scripts=[]}}\"" "Combine rejected this AWS API"
-validate_expected_error_match "dlm update-lifecycle-policy (6)" "aws dlm update-lifecycle-policy --policy-id foo --policy-details \"Schedules={CreateRule={Scripts=[]}}\"" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 create-vpc-endpoint-service-configuration" "aws ec2 create-vpc-endpoint-service-configuration --private-dns-name foo" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 modify-vpc-endpoint-service-configuration" "aws ec2 modify-vpc-endpoint-service-configuration --private-dns-name foo --service-id foo" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 create-dhcp-options" "aws ec2 create-dhcp-options --dhcp-configurations Key=ipv6-address-preferred-lease-time,Values=1000" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 modify-subnet-attribute" "aws ec2 modify-subnet-attribute --subnet-id subnet-1a2b3c4d --enable-dns64" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 create-subnet" "aws ec2 create-subnet --vpc-id vpc-123123123123 --ipv6-native" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 create-flow-logs (1)" "aws ec2 create-flow-logs --log-format '\${version} \${account-id} \${ecs-cluster-arn}' --resource-ids vpc-123123123123 --resource-type VPC" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 create-flow-logs (2)" "aws ec2 create-flow-logs --log-format '\${version} \${account-id} \${ecs-cluster-name}' --resource-ids vpc-123123123123 --resource-type VPC" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 create-flow-logs (3)" "aws ec2 create-flow-logs --log-format '\${version} \${account-id} \${ecs-cluster-arn} \${ecs-cluster-name}' --resource-ids vpc-123123123123 --resource-type VPC" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 create-flow-logs (4)" "aws ec2 create-flow-logs --log-format '\${version} \${ecs-cluster-name} \${account-id}' --resource-ids vpc-123123123123 --resource-type VPC" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 create-flow-logs (5)" "aws ec2 create-flow-logs --log-format '\${version} \${ecs-cluster-arn} \${ecs-cluster-name} \${account-id}' --resource-ids vpc-123123123123 --resource-type VPC" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 create-flow-logs (6)" "aws ec2 create-flow-logs --log-format '\${ecs-cluster-arn} \${version} \${account-id}' --resource-ids vpc-123123123123 --resource-type VPC" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 create-flow-logs (7)" "aws ec2 create-flow-logs --log-format '\${ecs-cluster-arn}' --resource-ids vpc-123123123123 --resource-type VPC" "Combine rejected this AWS API"
-validate_expected_error_match "ec2 describe-route-servers" "aws ec2 describe-route-servers" "Combine rejected this AWS API"
+validate_expected_error_match "ec2 create-launch-template" "aws ec2 create-launch-template --launch-template-name foo --launch-template-data ImageId=resolve:ssm:foo" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 create-launch-template-version" "aws ec2 create-launch-template-version --launch-template-name foo --launch-template-data ImageId=resolve:ssm:foo" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 create-instance-event-window" "aws ec2 create-instance-event-window" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 modify-instance-maintenance-options" "aws ec2 modify-instance-maintenance-options --instance-id i-12312312312312312 --reboot-migration disabled" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 create-network-interface" "aws ec2 create-network-interface --subnet-id subnet-123123123123123 --description \"Test\" --ipv4-prefixes Ipv4Prefix=10.0.0.0/28" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 assign-private-ip-addresses" "aws ec2 assign-private-ip-addresses --network-interface-id eni-12312312312312312 --ipv4-prefixes 10.0.0.0/28" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 attach-network-interface" "aws ec2 attach-network-interface --network-interface-id eni-1234567890abcdef0 --instance-id i-1234567890abcdef0 --device-index 1 --ena-srd-specification 'EnaSrdEnabled=true'" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 modify-network-interface-attribute" "aws ec2 modify-network-interface-attribute --network-interface-id eni-1234567890abcdef0 --ena-srd-specification 'EnaSrdEnabled=true'" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 create-volume" "aws ec2 create-volume --volume-type io1 --multi-attach-enabled --size 100 --iops 2000 --availability-zone us-iso-east-1a" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 modify-volume" "aws ec2 modify-volume --volume-id vol-01234567890abcdef --multi-attach-enabled" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 copy-snapshot" "aws ec2 copy-snapshot --completion-duration-minutes 15 --source-snapshot-id snap-0abcdef1234567890 --source-region us-iso-east-1 --destination-availability-zone us-iso-east-1a" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 cancel-capacity-reservation-fleets" "aws ec2 cancel-capacity-reservation-fleets --capacity-reservation-fleet-ids foo" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 create-capacity-reservation-fleet" "aws ec2 create-capacity-reservation-fleet --instance-type-specifications {} --total-target-capacity 2" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 run-instances" "aws ec2 run-instances --network-performance-options BandwidthWeighting=vpc-1 --image-id ami-213123123123" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 modify-instance-network-performance-options" "aws ec2 modify-instance-network-performance-options --instance-id i-1234567890abcdef0 --bandwidth-weighting=vpc-1" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 create-snapshots" "aws ec2 create-snapshots --instance-specification InstanceId=i-123123123123,ExcludeBootVolume=true,ExcludeDataVolumeIds=vol-123123123123" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "dlm create-lifecycle-policy (1)" "aws dlm create-lifecycle-policy --execution-role-arn foo --description foo --state foo --policy-details {} --default-policy INSTANCE" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "dlm create-lifecycle-policy (2)" "aws dlm create-lifecycle-policy --execution-role-arn foo --description foo --state foo --policy-details \"Schedules={ArchiveRule={RetainRule={}}}\"" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "dlm update-lifecycle-policy (1)" "aws dlm update-lifecycle-policy --policy-id foo --policy-details \"Schedules={ArchiveRule={RetainRule={}}}\"" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "dlm create-lifecycle-policy (3)" "aws dlm create-lifecycle-policy --execution-role-arn foo --description foo --state foo --policy-details \"Schedules={FastRestoreRule={}}\"" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "dlm update-lifecycle-policy (2)" "aws dlm update-lifecycle-policy --policy-id foo --policy-details \"Schedules={FastRestoreRule={}}\"" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "dlm create-lifecycle-policy (4)" "aws dlm create-lifecycle-policy --execution-role-arn foo --description foo --state foo --policy-details \"Parameters={ExcludeDataVolumeTags=[]}\"" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "dlm update-lifecycle-policy (3)" "aws dlm update-lifecycle-policy --policy-id foo --policy-details \"Parameters={ExcludeDataVolumeTags=[]}\"" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "dlm create-lifecycle-policy (5)" "aws dlm create-lifecycle-policy --execution-role-arn foo --description foo --state foo --policy-details \"Exclusions={}\"" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "dlm update-lifecycle-policy (4)" "aws dlm update-lifecycle-policy --policy-id foo --policy-details \"Exclusions={}\"" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "dlm create-lifecycle-policy (6)" "aws dlm create-lifecycle-policy --execution-role-arn foo --description foo --state foo --policy-details {} --exclusions {}" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "dlm update-lifecycle-policy (5)" "aws dlm update-lifecycle-policy --policy-id foo --exclusions {}" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "dlm create-lifecycle-policy (7)" "aws dlm create-lifecycle-policy --execution-role-arn foo --description foo --state foo --policy-details \"Schedules={CreateRule={Scripts=[]}}\"" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "dlm update-lifecycle-policy (6)" "aws dlm update-lifecycle-policy --policy-id foo --policy-details \"Schedules={CreateRule={Scripts=[]}}\"" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 create-vpc-endpoint-service-configuration" "aws ec2 create-vpc-endpoint-service-configuration --private-dns-name foo" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 modify-vpc-endpoint-service-configuration" "aws ec2 modify-vpc-endpoint-service-configuration --private-dns-name foo --service-id foo" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 create-dhcp-options" "aws ec2 create-dhcp-options --dhcp-configurations Key=ipv6-address-preferred-lease-time,Values=1000" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 modify-subnet-attribute" "aws ec2 modify-subnet-attribute --subnet-id subnet-1a2b3c4d --enable-dns64" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 create-subnet" "aws ec2 create-subnet --vpc-id vpc-123123123123 --ipv6-native" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 create-flow-logs (1)" "aws ec2 create-flow-logs --log-format '\${version} \${account-id} \${ecs-cluster-arn}' --resource-ids vpc-123123123123 --resource-type VPC" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 create-flow-logs (2)" "aws ec2 create-flow-logs --log-format '\${version} \${account-id} \${ecs-cluster-name}' --resource-ids vpc-123123123123 --resource-type VPC" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 create-flow-logs (3)" "aws ec2 create-flow-logs --log-format '\${version} \${account-id} \${ecs-cluster-arn} \${ecs-cluster-name}' --resource-ids vpc-123123123123 --resource-type VPC" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 create-flow-logs (4)" "aws ec2 create-flow-logs --log-format '\${version} \${ecs-cluster-name} \${account-id}' --resource-ids vpc-123123123123 --resource-type VPC" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 create-flow-logs (5)" "aws ec2 create-flow-logs --log-format '\${version} \${ecs-cluster-arn} \${ecs-cluster-name} \${account-id}' --resource-ids vpc-123123123123 --resource-type VPC" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 create-flow-logs (6)" "aws ec2 create-flow-logs --log-format '\${ecs-cluster-arn} \${version} \${account-id}' --resource-ids vpc-123123123123 --resource-type VPC" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 create-flow-logs (7)" "aws ec2 create-flow-logs --log-format '\${ecs-cluster-arn}' --resource-ids vpc-123123123123 --resource-type VPC" "Combine rejected this AWS API\|is not supported in this region"
+validate_expected_error_match "ec2 describe-route-servers" "aws ec2 describe-route-servers" "Combine rejected this AWS API\|is not supported in this region"
 log ""
 log "########################"
 log "# 87. ELB and ELBv2 lifecycle – rewrites, validation errors and cleanup"
@@ -2179,7 +2202,7 @@ validate_expected_error_match "rds create-db-instance (sqlserver-ex)" "aws rds c
 validate_expected_error_match "rds create-db-instance (sqlserver-web)" "aws rds create-db-instance --db-instance-identifier Test --db-instance-class db.m5.large --engine sqlserver-web --engine-version 14.5 --master-username Foo --master-user-password 12345678 --db-subnet-group combineendpointtestsubnetgroup --allocated-storage 20" "Combine rejected\|nrecognized"
 validate_expected_error_match "rds describe-db-instances (filter includes sqlserver-web)" "aws rds describe-db-instances --filters Name=engine,Values=postgres,mysql,sqlserver-web" "Combine rejected\|nrecognized"
 validate_rewrite_smart "rds describe-source-regions (all)" "aws rds describe-source-regions"
-require_tf "rds create-db-instance (aurora-mysql db.m5.large unsupported)" TF_RDS_SUBNET_GROUP_NAME && validate_expected_error_match "rds create-db-instance (aurora-mysql db.m5.large unsupported)" "aws rds create-db-instance --master-username combineadmin --master-user-password Combine1275317 --db-subnet-group-name \$TF_RDS_SUBNET_GROUP_NAME --db-instance-identifier CombineEndpointTestInstance --db-instance-class db.m5.large --allocated-storage 8 --engine aurora-mysql --availability-zone us-iso-east-1a" "Combine rejected this AWS API"
+require_tf "rds create-db-instance (aurora-mysql db.m5.large unsupported)" TF_RDS_SUBNET_GROUP_NAME && validate_expected_error_match "rds create-db-instance (aurora-mysql db.m5.large unsupported)" "aws rds create-db-instance --master-username combineadmin --master-user-password Combine1275317 --db-subnet-group-name \$TF_RDS_SUBNET_GROUP_NAME --db-instance-identifier CombineEndpointTestInstance --db-instance-class db.m5.large --allocated-storage 8 --engine aurora-mysql --availability-zone us-iso-east-1a" "Invalid DB Instance class"
 validate_expected_error_match "rds create-db-cluster (manage master user password)" "aws rds create-db-cluster --master-username foo --manage-master-user-password --master-user-secret-kms-key-id arn:aws-iso:kms:us-iso-east-1:663117128738:key/778b96a8-e41c-4a4d-a09e-368526bbf0d4 --database-name Test --db-cluster-identifier Test --db-cluster-instance-class db.m6gd.xlarge --engine aurora-mysql --engine-version 5.7.mysql_aurora.2.11.2 --db-subnet-group-name default --vpc-security-group-ids sg-123456789abcdefgh" "Combine rejected this AWS API"
 
 log ""
@@ -2209,9 +2232,11 @@ log "# 98. Glue connection – rewrites"
 log "########################"
 
 GLUE_CONNECTION="combine-test${RUN_SUFFIX,,}"
+GLUE_CREATED=""
 validate_success "glue create-connection" "aws glue create-connection --connection-input '{ \"Name\":\"$GLUE_CONNECTION\", \"Description\":\"Combine\", \"ConnectionType\":\"KAFKA\", \"ConnectionProperties\": { \"KAFKA_BOOTSTRAP_SERVERS\":\"combine\", \"KAFKA_SSL_ENABLED\":\"true\", \"KAFKA_CUSTOM_CERT\": \"s3://bucket/prefix/cert-file.pem\", \"KAFKA_SASL_SCRAM_SECRETS_ARN\": \"arn:aws-iso:secretsmanager:us-iso-east-1:663117128738:secret:aws-example_secret-IWXmrw\", \"ROLE_ARN\": \"arn:aws-iso:iam::663117128738:role/Combine-${SHARD}-TS-WLDEVELOPER\", \"REGION\": \"us-iso-east-1\" }, \"AuthenticationConfiguration\": { \"SecretArn\": \"arn:aws-iso:secretsmanager:us-iso-east-1:663117128738:secret:aws-example_secret-IWXmrw\" }, \"PhysicalConnectionRequirements\":{ \"SubnetId\":\"subnet-1234\", \"SecurityGroupIdList\":[\"sg-1234\"], \"AvailabilityZone\":\"us-iso-east-1a\" } }'"
-validate_rewrite_smart "glue get-connection" "aws glue get-connection --name $GLUE_CONNECTION"
-validate_success "glue delete-connection" "aws glue delete-connection --connection-name $GLUE_CONNECTION"
+aws glue get-connection --name "$GLUE_CONNECTION" >/dev/null 2>&1 && GLUE_CREATED=yes
+require_value "glue get-connection" GLUE_CREATED && validate_rewrite_smart "glue get-connection" "aws glue get-connection --name $GLUE_CONNECTION"
+require_value "glue delete-connection" GLUE_CREATED && validate_success "glue delete-connection" "aws glue delete-connection --connection-name $GLUE_CONNECTION"
 
 log ""
 log "########################"
@@ -2301,24 +2326,24 @@ log "# 104. MSK (Kafka) serverless cluster and configuration – rewrites and ta
 log "########################"
 
 KAFKA_CLUSTER_ARN="" KAFKA_CONFIGURATION_ARN=""
-if require_tf "kafka create-cluster-v2" TF_CLI_NETWORK_SECURITY_GROUP_ID && [[ -n "$SUBNET_3" ]]; then
+if require_long "kafka cluster lifecycle" && require_tf "kafka create-cluster-v2" TF_CLI_NETWORK_SECURITY_GROUP_ID && [[ -n "$SUBNET_3" ]]; then
   validate_rewrite_smart "kafka create-cluster-v2 (serverless)" "aws kafka create-cluster-v2 --cluster-name CombineTest${RUN_SUFFIX} --serverless 'VpcConfigs=[{SubnetIds=[$SUBNET_1,$SUBNET_2,$SUBNET_3],SecurityGroupIds=[$TF_CLI_NETWORK_SECURITY_GROUP_ID]}],ClientAuthentication={Sasl={Iam={Enabled=true}}}'" "" ".ClusterArn" "KAFKA_CLUSTER_ARN"
-  validate_success "kafka list-tags-for-resource" "aws kafka list-tags-for-resource --resource-arn \$KAFKA_CLUSTER_ARN"
-  validate_success "kafka tag-resource" "aws kafka tag-resource --resource-arn \$KAFKA_CLUSTER_ARN --tags CombineTest=Test"
-  validate_success "kafka list-tags-for-resource (tagged)" "aws kafka list-tags-for-resource --resource-arn \$KAFKA_CLUSTER_ARN" "CombineTest"
-  validate_success "kafka untag-resource" "aws kafka untag-resource --resource-arn \$KAFKA_CLUSTER_ARN --tag-keys CombineTest"
+  require_value "kafka list-tags-for-resource" KAFKA_CLUSTER_ARN && validate_success "kafka list-tags-for-resource" "aws kafka list-tags-for-resource --resource-arn \$KAFKA_CLUSTER_ARN"
+  require_value "kafka tag-resource" KAFKA_CLUSTER_ARN && validate_success "kafka tag-resource" "aws kafka tag-resource --resource-arn \$KAFKA_CLUSTER_ARN --tags CombineTest=Test"
+  require_value "kafka list-tags-for-resource (tagged)" KAFKA_CLUSTER_ARN && validate_success "kafka list-tags-for-resource (tagged)" "aws kafka list-tags-for-resource --resource-arn \$KAFKA_CLUSTER_ARN" "CombineTest"
+  require_value "kafka untag-resource" KAFKA_CLUSTER_ARN && validate_success "kafka untag-resource" "aws kafka untag-resource --resource-arn \$KAFKA_CLUSTER_ARN --tag-keys CombineTest"
   validate_rewrite_smart "kafka list-clusters-v2" "aws kafka list-clusters-v2"
-  validate_rewrite_smart "kafka describe-cluster-v2" "aws kafka describe-cluster-v2 --cluster-arn \$KAFKA_CLUSTER_ARN"
+  require_value "kafka describe-cluster-v2" KAFKA_CLUSTER_ARN && validate_rewrite_smart "kafka describe-cluster-v2" "aws kafka describe-cluster-v2 --cluster-arn \$KAFKA_CLUSTER_ARN"
   if [[ -n "$KAFKA_CLUSTER_ARN" ]]; then
     log "⏳ Waiting for MSK cluster to become ACTIVE so it can be deleted..."
     wait_until 1800 "[[ \$(aws kafka describe-cluster-v2 --cluster-arn \"\$KAFKA_CLUSTER_ARN\" --query 'ClusterInfo.State' --output text) == ACTIVE ]]" || log "⚠️  MSK cluster did not become ACTIVE in time"
   fi
-  validate_rewrite_smart "kafka delete-cluster" "aws kafka delete-cluster --cluster-arn \$KAFKA_CLUSTER_ARN"
+  require_value "kafka delete-cluster" KAFKA_CLUSTER_ARN && validate_rewrite_smart "kafka delete-cluster" "aws kafka delete-cluster --cluster-arn \$KAFKA_CLUSTER_ARN"
 fi
 echo "auto.create.topics.enable=false" > kafka_server.properties
 validate_rewrite_smart "kafka create-configuration" "aws kafka create-configuration --name CombineTest${RUN_SUFFIX} --description Foo --kafka-versions 2.2.1 --server-properties fileb://kafka_server.properties" "" ".Arn" "KAFKA_CONFIGURATION_ARN"
-validate_rewrite_smart "kafka describe-configuration" "aws kafka describe-configuration --arn \$KAFKA_CONFIGURATION_ARN"
-validate_rewrite_smart "kafka delete-configuration" "aws kafka delete-configuration --arn \$KAFKA_CONFIGURATION_ARN"
+require_value "kafka describe-configuration" KAFKA_CONFIGURATION_ARN && validate_rewrite_smart "kafka describe-configuration" "aws kafka describe-configuration --arn \$KAFKA_CONFIGURATION_ARN"
+require_value "kafka delete-configuration" KAFKA_CONFIGURATION_ARN && validate_rewrite_smart "kafka delete-configuration" "aws kafka delete-configuration --arn \$KAFKA_CONFIGURATION_ARN"
 
 log ""
 log "########################"

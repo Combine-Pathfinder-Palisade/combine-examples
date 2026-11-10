@@ -17,13 +17,21 @@ data "aws_subnets" "combine_az" {
   }
 }
 
+data "aws_subnet" "combine_az" {
+  for_each = toset(data.aws_subnets.combine_az.ids)
+  id       = each.value
+}
+
 locals {
   all_azs   = data.aws_availability_zones.available.names
   azs_one   = local.all_azs[0]
   azs_three = slice(local.all_azs, 0, 3)
 
-  combine_subnet_ids_all   = sort(data.aws_subnets.combine_az.ids)
-  combine_subnet_ids_three = slice(local.combine_subnet_ids_all, 0, 3)
+  combine_subnet_ids_all = sort(data.aws_subnets.combine_az.ids)
+
+  # NOTE: One subnet per Availability Zone, so resources spanning three AZs (e.g. the RDS cluster) get three distinct AZs.
+  combine_subnet_ids_by_az = { for subnet in data.aws_subnet.combine_az : subnet.availability_zone => subnet.id... }
+  combine_subnet_ids_three = slice([for az in sort(keys(local.combine_subnet_ids_by_az)) : sort(local.combine_subnet_ids_by_az[az])[0]], 0, 3)
 
   suffix     = "-${var.run_id}"
   trail_name = "TfCombineTest${local.suffix}"
@@ -299,7 +307,7 @@ resource "aws_ssm_parameter" "tf_test_secure_string" {
   type   = "SecureString"
   value  = "Test"
   key_id = aws_kms_key.tf_combine_key.arn
-} #Evaluate this see if it uses the correct arn
+}
 
 resource "aws_dynamodb_table" "tf_combine_endpoints_test_gt" {
   name         = "tf-combine-endpoints-test-gt${local.suffix}"
@@ -388,6 +396,8 @@ resource "aws_db_subnet_group" "tf_combine_endpoints_subnet_group" {
 }
 
 resource "aws_rds_cluster" "tf_combine_cluster" {
+  count = var.long_tests ? 1 : 0
+
   cluster_identifier   = "tf-combine-endpoint-test-cluster${local.suffix}"
   engine               = "aurora-postgresql"
   master_username      = "combineadmin"
@@ -397,6 +407,8 @@ resource "aws_rds_cluster" "tf_combine_cluster" {
 }
 
 resource "aws_db_instance" "tf_combine_instance" {
+  count = var.long_tests ? 1 : 0
+
   identifier     = "tf-combine-endpoint-test-instance${local.suffix}"
   instance_class = "db.t3.micro"
   engine         = "mysql"

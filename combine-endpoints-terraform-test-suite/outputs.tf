@@ -78,19 +78,19 @@ output "cloudtrail_arn" {
 }
 
 output "rds_cluster_endpoint" {
-  value = aws_rds_cluster.tf_combine_cluster.endpoint
+  value = one(aws_rds_cluster.tf_combine_cluster[*].endpoint)
 }
 
 output "rds_cluster_arn" {
-  value = aws_rds_cluster.tf_combine_cluster.arn
+  value = one(aws_rds_cluster.tf_combine_cluster[*].arn)
 }
 
 output "rds_instance_endpoint" {
-  value = aws_db_instance.tf_combine_instance.endpoint
+  value = one(aws_db_instance.tf_combine_instance[*].endpoint)
 }
 
 output "rds_instance_arn" {
-  value = aws_db_instance.tf_combine_instance.arn
+  value = one(aws_db_instance.tf_combine_instance[*].arn)
 }
 
 output "lambda_function_arn" {
