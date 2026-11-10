@@ -18,8 +18,8 @@ data "aws_subnets" "combine_az" {
 }
 
 locals {
-  all_azs = data.aws_availability_zones.available.names
-  azs_one = local.all_azs[0]
+  all_azs   = data.aws_availability_zones.available.names
+  azs_one   = local.all_azs[0]
   azs_three = slice(local.all_azs, 0, 3)
 
   combine_subnet_ids_all   = sort(data.aws_subnets.combine_az.ids)
@@ -35,11 +35,12 @@ resource "aws_s3_bucket" "tf_test_bucket" {
 
 
 resource "aws_s3_bucket" "tf_test_bucket_2" {
-  bucket = "tf-combine-test-permissions-bucket${local.suffix}"
+  bucket        = "tf-combine-test-permissions-bucket${local.suffix}"
+  force_destroy = true # The CLI test suite uploads objects to this bucket.
 }
 
 resource "aws_s3_bucket" "tf_cloudtrail_bucket" {
-  bucket = "tf-cloudtrail-logs-${var.account_id}${local.suffix}"
+  bucket        = "tf-cloudtrail-logs-${var.account_id}${local.suffix}"
   force_destroy = true
 }
 
@@ -360,8 +361,9 @@ resource "aws_kms_key_policy" "tf_combine_key_policy" {
         ],
         Resource = "*",
         Condition = {
-          StringEquals = {
-            "kms:EncryptionContext:aws:cloudtrail:arn" = "arn:${data.aws_partition.current.partition}:cloudtrail:${data.aws_region.current.name}:${var.account_id}:trail/${local.trail_name}"
+          # Also lets the CLI test suite's own trail (CombineTest<suffix>) use this key.
+          StringLike = {
+            "kms:EncryptionContext:aws:cloudtrail:arn" = "arn:${data.aws_partition.current.partition}:cloudtrail:${data.aws_region.current.name}:${var.account_id}:trail/*CombineTest${local.suffix}"
           }
         }
       }
@@ -381,7 +383,7 @@ resource "aws_cloudtrail" "tf_combine_test_trail" {
 }
 
 resource "aws_db_subnet_group" "tf_combine_endpoints_subnet_group" {
-  name = "tf-combine-endpoints-test-subnet-group${local.suffix}"
+  name       = "tf-combine-endpoints-test-subnet-group${local.suffix}"
   subnet_ids = local.combine_subnet_ids_three
 }
 
@@ -395,9 +397,9 @@ resource "aws_rds_cluster" "tf_combine_cluster" {
 }
 
 resource "aws_db_instance" "tf_combine_instance" {
-  identifier           = "tf-combine-endpoint-test-instance${local.suffix}"
-  instance_class       = "db.t3.micro"
-  engine               = "mysql"
+  identifier     = "tf-combine-endpoint-test-instance${local.suffix}"
+  instance_class = "db.t3.micro"
+  engine         = "mysql"
   # NOTE: Must be in both the emulated Partition's supported RDS versions (cloud-partitions.json) and the host Region's available versions.
   engine_version       = "8.4.8" #seems engine needs to be specified in terraform or it will send a request with empty version
   allocated_storage    = 20
@@ -516,3 +518,18 @@ resource "aws_eip" "bastion" {
     Project     = "combine-lab"
   }
 }*/
+
+# --------------------------------------------------------------------------------
+# Fixtures used only by the CLI test suite
+# --------------------------------------------------------------------------------
+
+resource "aws_glacier_vault" "cli_test_vault" {
+  name = "CombineTest${local.suffix}"
+}
+
+# NOTE: Separate from lambda_sg so ENIs from the CLI suite's network tests (Route 53 Resolver, Kafka) can't block it.
+resource "aws_security_group" "cli_network_sg" {
+  name        = "combine-cli-network-sg${local.suffix}"
+  description = "CLI test suite network tests"
+  vpc_id      = var.vpc_id
+}

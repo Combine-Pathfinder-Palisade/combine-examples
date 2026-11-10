@@ -120,3 +120,23 @@ output "rds_subnet_group_name" {
 output "vpc_id" {
   value = var.vpc_id
 }
+
+output "run_suffix" {
+  value = local.suffix
+}
+
+output "glacier_vault_name" {
+  value = aws_glacier_vault.cli_test_vault.name
+}
+
+output "cli_network_security_group_id" {
+  value = aws_security_group.cli_network_sg.id
+}
+
+output "sqs_redrive_queue_url" {
+  value = aws_sqs_queue.tf_test_redrive.url
+}
+
+output "cloudwatch_log_group_arn" {
+  value = aws_cloudwatch_log_group.tf_log_group.arn
+}
