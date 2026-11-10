@@ -90,6 +90,11 @@ record_fail() {
   FAILURES+=("${label}${hint:+ — ${hint}}")
 }
 
+# NOTE: Failed AWS calls report their reason on stderr; keep it so "empty or invalid response" failures say why.
+CMD_STDERR=$(mktemp)
+trap 'rm -f "$CMD_STDERR"' EXIT
+print_cmd_stderr() { [[ -s "$CMD_STDERR" ]] && sed 's/^/   /' "$CMD_STDERR" | head -n 5; return 0; }
+
 # require_tf <label> <VAR>...: returns 0 if every Terraform variable is set, otherwise reports the test as skipped.
 # Usage: require_tf "my test" TF_FOO && validate_success "my test" "aws ... \$TF_FOO"
 require_tf() {
@@ -364,10 +369,11 @@ validate_rewrite_smart() {
   record_cmd "$full_cmd"
 
   local output
-  output=$(eval "$full_cmd" 2>/dev/null)
+  output=$(eval "$full_cmd" 2>"$CMD_STDERR")
 
   if [[ -z "$output" || "$output" == "null" ]]; then
     echo "❌ Failed (empty or invalid response)"
+    print_cmd_stderr
     record_fail "$label${region:+ ($region)}" "command returned empty/invalid — check credentials or endpoint"
     return 1
   fi
@@ -477,10 +483,11 @@ validate_rewrite_with_exception() {
   record_cmd "$cmd"
 
   local output
-  output=$(eval "$cmd" 2>/dev/null)
+  output=$(eval "$cmd" 2>"$CMD_STDERR")
 
   if [[ -z "$output" || "$output" == "null" ]]; then
     echo "❌ Failed (empty or invalid response)"
+    print_cmd_stderr
     record_fail "$label" "command returned empty/invalid — check credentials or endpoint"
     return 1
   fi
@@ -1091,10 +1098,10 @@ log "########################"
 log "# 33. ELBv2 Should fail, not implemented"
 log "########################"
 
-validate_expected_error_match "elbv2 create-load-balancer (not implemented)" "aws elbv2 create-load-balancer --name Foo --type network --subnet-mappings SubnetId=foo SubnetId=bar SubnetId=baz,PrivateIPv4Address=10.0.0.2" "Combine rejected this AWS API because it is not implemented"
-validate_expected_error_match "elbv2 set-subnets (not implemented)" "aws elbv2 set-subnets --load-balancer-arn Foo --subnet-mappings SubnetId=foo SubnetId=bar SubnetId=baz,PrivateIPv4Address=10.0.0.2" "Combine rejected this AWS API because it is not implemented"
-validate_expected_error_match "elbv2 create-load-balancer (security groups not implemented)" "aws elbv2 create-load-balancer --name Foo --type network --security-groups foo" "Combine rejected this AWS API because it is not implemented"
-validate_expected_error_match "elbv2 set-security-groups (not implemented)" "aws elbv2 set-security-groups --load-balancer-arn foo --security-groups foo" "Combine rejected this AWS API because it is not implemented"
+validate_expected_error_match "elbv2 create-load-balancer (not implemented)" "aws elbv2 create-load-balancer --name Foo --type network --subnet-mappings SubnetId=foo SubnetId=bar SubnetId=baz,PrivateIPv4Address=10.0.0.2" "Combine rejected this AWS API request because it is not implemented"
+validate_expected_error_match "elbv2 set-subnets (not implemented)" "aws elbv2 set-subnets --load-balancer-arn Foo --subnet-mappings SubnetId=foo SubnetId=bar SubnetId=baz,PrivateIPv4Address=10.0.0.2" "Combine rejected this AWS API request because it is not implemented"
+validate_expected_error_match "elbv2 create-load-balancer (security groups not implemented)" "aws elbv2 create-load-balancer --name Foo --type network --security-groups foo" "Combine rejected this AWS API request because it is not implemented"
+validate_expected_error_match "elbv2 set-security-groups (not implemented)" "aws elbv2 set-security-groups --load-balancer-arn foo --security-groups foo" "Combine rejected this AWS API request because it is not implemented"
 
 log ""
 log "########################"
@@ -1389,7 +1396,6 @@ if cmp -s test.encrypt test.unencrypted; then
 else
   echo "❌ KMS encrypt/decrypt roundtrip failed (files do NOT match)"
   record_fail "KMS encrypt/decrypt roundtrip" "decrypted output does not match original — check KMS key permissions or ciphertext corruption"
-  exit 1
 fi
 
 validate_rewrite_smart "kms schedule-key-deletion" "aws kms schedule-key-deletion --key-id \$KEY_ID --pending-window-in-days 7 --endpoint-url https://kms.us-iso-east-1.c2s.ic.gov" "" ".KeyId"
