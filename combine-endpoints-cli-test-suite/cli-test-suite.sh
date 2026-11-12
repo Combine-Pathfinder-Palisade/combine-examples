@@ -1420,14 +1420,14 @@ log "########################"
 log "# 52. SWF Domain Tagging & Rewriting"
 log "########################"
 
-# Attempt to register domain, ignore if already exists
-record_cmd "aws swf register-domain --name CombineTest --workflow-execution-retention-period-in-days 1"
-if aws swf register-domain --name CombineTest --workflow-execution-retention-period-in-days 1 2>&1 | grep -q "DomainAlreadyExistsFault"; then
-  log "ℹ️  Domain CombineTest already exists. Attempting undeprecate."
-  validate_success "swf undeprecate-domain" "aws swf undeprecate-domain --name CombineTest"
-else
-  log "✅ Domain CombineTest registered."
-fi
+# NOTE: SWF domains can only be deprecated, never deleted, so the suite reuses one. Decide from its actual status
+# rather than from register-domain's error text.
+SWF_STATUS=$(aws swf describe-domain --name CombineTest --query 'domainInfo.status' --output text 2>/dev/null || true)
+case "$SWF_STATUS" in
+  REGISTERED) log "ℹ️  SWF domain CombineTest is already registered." ;;
+  DEPRECATED) validate_success "swf undeprecate-domain" "aws swf undeprecate-domain --name CombineTest" ;;
+  *) validate_success "swf register-domain" "aws swf register-domain --name CombineTest --workflow-execution-retention-period-in-days 1" ;;
+esac
 
 validate_rewrite_smart "swf describe-domain" "aws swf describe-domain --name CombineTest"
 validate_success "swf list-tags (should be empty initially)" "aws swf list-tags-for-resource --resource-arn arn:aws-iso:swf:us-iso-east-1:663117128738:/domain/CombineTest"
